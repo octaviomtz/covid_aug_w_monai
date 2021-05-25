@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 from monai.handlers import MetricsSaver
 from scipy.ndimage import label
 import matplotlib.patches as patches
+from pathlib import Path
 
 #%%
 def plot_image_with_lesion(mini_batch, IDX=0, SLICE=50):
@@ -92,13 +93,14 @@ def plot_rect_with_coords(scan, lesion_mask, lesion_coords_larger_than, slice_, 
 
 def set_individual_lesion_name(mini_batch, lesion_coords):
     '''construct name of individual lesion based on its scan name and its coords'''
-    name_prefix = mini_batch['image_meta_dict']['filename_or_obj'][0]
-    name_prefix = name_prefix.split('/')[-1].split('.nii')[0]
-    name_prefix
+    # name_prefix = mini_batch['image_meta_dict']['filename_or_obj'][0]
+    # name_prefix = name_prefix.split('/')[-1].split('.nii')[0]
+    # name_prefix
     name_suffix = [f'{i}' for i in lesion_coords]
     name_suffix = '_'.join(name_suffix)
-    name_lesion = '_'.join([name_prefix, name_suffix])
-    return name_lesion
+    name_suffix = f'les_{name_suffix}'
+    # name_lesion = '/'.join([name_prefix, name_suffix])
+    return name_suffix
 
 #%%
 # ORIGINAL get_xforms
@@ -151,7 +153,8 @@ def get_xforms_load(mode="load", keys=("image", "label")):
     ]
     if mode == "load":
         dtype = (np.int16, np.uint8)
-    xforms.extend([CastToTyped(keys, dtype=dtype), ToTensord(keys)])
+    # xforms.extend([CastToTyped(keys, dtype=dtype), ToTensord(keys)])
+    xforms.extend([CastToTyped(keys, dtype=dtype)])
     return monai.transforms.Compose(xforms)
 
 
@@ -159,8 +162,8 @@ def get_xforms_load(mode="load", keys=("image", "label")):
 def main():
     data_folder = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/Train'
     folder_dest = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/'
-    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:10]
-    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:10]
+    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:10] #OMM
+    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:10] #OMM
     # =====
     keys = ("image", "label")
     train_frac, val_frac = 0.8, 0.2
@@ -185,10 +188,13 @@ def main():
 
     # main loop
     for idx_mini_batch, mini_batch in enumerate(train_loader):
-        if idx_mini_batch==1:break
+        # if idx_mini_batch==1:break #OMM
         BATCH_IDX=0
         scan = mini_batch['image'][BATCH_IDX][0,...]
         lesion_mask = mini_batch['label'][BATCH_IDX][0,...]
+        scan_name = mini_batch['image_meta_dict']['filename_or_obj'][0].split('/')[-1].split('.nii')[0]
+        # folder to save results
+        Path(f'{folder_dest}{scan_name}').mkdir(parents=True, exist_ok=True)
         # get individual lesions per slice
         lesion_coords_larger_than, lesion_slices_max_size, mini_scan, mini_mask = large_lesion_per_slice(scan, lesion_mask)
         # get the slices that have lesions
@@ -196,11 +202,12 @@ def main():
         slices_with_lesions = np.unique(slices_with_lesions)
         # make sure individual lesion a its mask are the same size, get its name and save the images
         for idx_individual_lesion, (lesion_coords, m_scan, m_mask) in enumerate(zip(lesion_coords_larger_than, mini_scan, mini_mask)):
-            if idx_individual_lesion ==10:break #OMM
+            # if idx_individual_lesion ==10:break #OMM
             assert np.shape(m_scan) == np.shape(m_mask)
             name_lesion = set_individual_lesion_name(mini_batch, lesion_coords)
-            np.save(f'{folder_dest}{name_lesion}', m_scan)
-            np.savez_compressed(f'{folder_dest}{name_lesion}_mask', m_mask)
+            np.save(f'{folder_dest}{scan_name}/{name_lesion}', m_scan)
+            np.savez_compressed(f'{folder_dest}{scan_name}/{name_lesion}_mask', m_mask)
+        print(f'idx_individual_lesion={idx_individual_lesion}')
 
 
 if __name__ == "__main__":

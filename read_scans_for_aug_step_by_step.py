@@ -175,7 +175,6 @@ print(type(train_files), type(train_files[0]), len(train_files))
 # %%
 batch_size = 1
 transforms_load = get_xforms_load("load", keys)
-transforms_load
 
 # %%
 train_ds = monai.data.CacheDataset(data=train_files, transform=transforms_load)
@@ -209,7 +208,7 @@ plot_image_with_lesion(mini_batch, SLICE=lesion_slices[10])
 lesion_coords_larger_than, lesion_slices_max_size, mini_scan, mini_mask = large_lesion_per_slice(scan, lesion_mask)
 print(np.shape(lesion_coords_larger_than), np.shape(lesion_slices_max_size))
 for idx, (i,j) in enumerate(zip(lesion_coords_larger_than, mini_scan)):
-    if idx==5:break
+    if idx==2:break
     print(i, np.shape(j))
 
 # %%
@@ -222,8 +221,10 @@ slices_with_lesions
 
 # %%
 # plot to check images
-plot_rect_with_coords(scan, lesion_mask, lesion_coords_larger_than, slices_with_lesions[1])
-plot_rect_with_coords(scan, lesion_mask, lesion_coords_larger_than, slices_with_lesions[1],pad=0)
+SLICE=2
+slices_with_lesions[SLICE]
+plot_rect_with_coords(scan, lesion_mask, lesion_coords_larger_than, slices_with_lesions[SLICE])
+plot_rect_with_coords(scan, lesion_mask, lesion_coords_larger_than, slices_with_lesions[SLICE],pad=0)
 
 # %%
 # make sure individual lesion a its mask are the same size and get its name
