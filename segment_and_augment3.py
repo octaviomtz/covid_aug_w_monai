@@ -47,7 +47,7 @@ from utils_cell_auto import (correct_label_in_plot,
     epochs_in_inner_loop, 
     plot_loss_and_lesion_synthesis,
     to_rgb,
-    CeA_00, CeA_0x,
+    CeA_00, CeA_0x, CeA_BASE,
     )
 
 #%%
@@ -85,66 +85,74 @@ def get_xforms_load_scans(mode="load", keys=("image", "label")):
 
 #%%
 parser = argparse.ArgumentParser(description='scan name ending in _ct/')
-parser.add_argument('scan_name', nargs='?')
-parser.add_argument('only_one_slice', nargs='?', type=int, const=-1)
+parser.add_argument('--SCAN_NAME', nargs='?')
+parser.add_argument('--only_one_slice', nargs='?', type=int, const=-1)
+parser.add_argument('--BACKGROUND_INTENSITY', nargs='?', type=float, const=0.11)
+parser.add_argument('--STEP_SIZE', nargs='?', type=float, const=1)
+parser.add_argument('--SCALE_MASK', nargs='?', type=float, const=1)
+parser.add_argument('--SEED_VALUE', nargs='?', type=float, const=.19)
+parser.add_argument('--PRETRAIN', nargs='?', type=int, const=100)
+parser.add_argument('--CH0_1', nargs='?', type=int, const=1)
+parser.add_argument('--CH1_16', nargs='?', type=int, const=16)
+parser.add_argument('--ALIVE_THRESH', nargs='?', type=float, const=0.1)
+parser.add_argument('--GROW_ON_K_ITER', nargs='?', type=int, const=1)
+parser.add_argument('--INNER_ITER', nargs='?', type=int, const=1)
+parser.add_argument('--SKIP_LESIONS', nargs='?', type=int, const=0)
 args = parser.parse_args()
-# SCAN_NAME = 'volume-covid19-A-0011_ct/'
-SCAN_NAME = args.scan_name
-print(SCAN_NAME, args.only_one_slice)
+
+print(f'\nSCAN_NAME={args.SCAN_NAME}, only_one_slice={args.only_one_slice}, \
+BACKGROUND_INTENSITY={args.BACKGROUND_INTENSITY}, STEP_SIZE={args.STEP_SIZE},\
+SCALE_MASK={args.SCALE_MASK}, SEED_VALUE={args.SEED_VALUE}, PRETRAIN={args.PRETRAIN}, \
+CH0_1={args.CH0_1}, CH1_16={args.CH1_16}, ALIVE_THRESH={args.ALIVE_THRESH}, \
+GROW_ON_K_ITER={args.GROW_ON_K_ITER}, INNER_ITER={args.INNER_ITER}, \
+SKIP_LESIONS={args.SKIP_LESIONS}')
+
 
 # LOAD ORIGINAL SCAN /=== FOR fig_slic, later can be removed
 data_folder = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/Train'
-folder_dest = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/'
-images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:30] #OMM
-labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:30] #OMM
-# =====
+images= [f'{data_folder}/{args.SCAN_NAME}_ct.nii.gz']
+labels= [f'{data_folder}/{args.SCAN_NAME}_seg.nii.gz']
 keys = ("image", "label")
-train_frac, val_frac = 0.8, 0.2
-n_train = int(train_frac * len(images)) + 1
-n_val = min(len(images) - n_train, int(val_frac * len(images)))
-# =====
-train_files = [{keys[0]: img, keys[1]: seg} for img, seg in zip(images[:n_train], labels[:n_train])]
-val_files = [{keys[0]: img, keys[1]: seg} for img, seg in zip(images[-n_val:], labels[-n_val:])]
+files_scans = [{keys[0]: img, keys[1]: seg} for img, seg in zip(images, labels)]
 
 batch_size = 1
 transforms_load = get_xforms_load_scans("load", keys)
-train_ds = monai.data.CacheDataset(data=train_files, transform=transforms_load)
-train_loader = monai.data.DataLoader(
-        train_ds,
+ds_scans = monai.data.CacheDataset(data=files_scans, transform=transforms_load)
+loader_scans = monai.data.DataLoader(
+        ds_scans,
         batch_size=batch_size,
         shuffle=False, #should be true for training
         num_workers=2,
         pin_memory=torch.cuda.is_available(),
     )
 
-for idx_mini_batch, mini_batch in enumerate(train_loader):
+for idx_mini_batch, mini_batch in enumerate(loader_scans):
     # if idx_mini_batch==1:break #OMM
     BATCH_IDX=0
     scan = mini_batch['image'][BATCH_IDX][0,...]
     scan_mask = mini_batch['label'][BATCH_IDX][0,...]
-    scan_name = mini_batch['image_meta_dict']['filename_or_obj'][0].split('/')[-1].split('.nii')[0]
-    if scan_name == SCAN_NAME[:-1]: break
-scan = scan.numpy()
+    scan_name = mini_batch['image_meta_dict']['filename_or_obj'][0].split('/')[-1].split('.nii')[0][:-3]
+print(f'working on scan= {scan_name}')
+assert scan_name == args.SCAN_NAME, 'cannot load that scan'
+scan = scan.numpy()   #ONLY READ ONE SCAN (WITH PREVIOUS BREAK)
 scan_mask = scan_mask.numpy()
-
 # LOAD ORIGINAL SCAN ===/
 
 # LOAD INDIVIDUAL LESIONS
-folder_source = f'/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/{SCAN_NAME}'
+folder_source = f'/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/{args.SCAN_NAME}_ct/'
 files_scan = sorted(glob.glob(os.path.join(folder_source,"*.npy")))
 files_mask = sorted(glob.glob(os.path.join(folder_source,"*.npz")))
 keys = ("image", "label")
 files = [{keys[0]: img, keys[1]: seg} for img, seg in zip(files_scan, files_mask)]
 print(len(files_scan), len(files_mask), len(files))
-
 # %%
 batch_size = 1
 transforms_load = get_xforms_load("load", keys)
 
 #%%
-train_ds = monai.data.CacheDataset(data=files, transform=transforms_load)
-train_loader = monai.data.DataLoader(
-        train_ds,
+ds_lesions = monai.data.CacheDataset(data=files, transform=transforms_load)
+loader_lesions = monai.data.DataLoader(
+        ds_lesions,
         batch_size=batch_size,
         shuffle=False, #should be true for training
         num_workers=2,
@@ -155,7 +163,9 @@ train_loader = monai.data.DataLoader(
 mask_sizes=[]
 cluster_sizes = []
 targets_all = []
-for idx_mini_batch,mini_batch in enumerate(train_loader):
+for idx_mini_batch,mini_batch in enumerate(loader_lesions):
+    if idx_mini_batch < args.SKIP_LESIONS:continue #resume incomplete reconstructions
+
     img = mini_batch['image'].numpy()
     mask = mini_batch['label'].numpy()
     mask = remove_small_objects(mask, 20)
@@ -163,9 +173,8 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
     name_prefix = mini_batch['image_meta_dict']['filename_or_obj'][0].split('/')[-1].split('.npy')[0].split('19-')[-1]
     print(f'mini_batch = {idx_mini_batch} {name_prefix}')
     img_lesion = img*mask
-
     # if 2nd argument is provided then only analyze that slice
-    if args.only_one_slice: 
+    if args.only_one_slice != -1: 
         slice_used = int(name_prefix.split('_')[-1])
         if slice_used != int(args.only_one_slice): continue
 
@@ -217,38 +226,11 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
     labelled, nr = label(mask_slic)
     mask_dil = remove_small_holes(remove_small_objects(mask_slic, 50))
     labelled2, nr2 = label(mask_dil)
-    
-    # %%
-    # fig, ax = plt.subplots(1,4, figsize=(16,6))
-    # ax[0].imshow((background>0)*img[0], vmax=1)
-    # ax[1].imshow((vessels>0)*img[0], vmax=1)
-    # ax[2].imshow((lesion_area>0)*img[0], vmax=1)
-    # boundaries = mark_boundaries((lesion_area>0)*img[0], segments)[...,0]
-    # ax[3].imshow(boundaries*(lesion_area>0), vmax=1)
-    # for axx in ax.ravel(): axx.axis('off')
-    # fig.tight_layout()
 
-    # %%
-    # lesion_area_only = (lesion_area>0)*img[0]
-    # plt.imshow(lesion_area_only)
-    # np.shape(lesion_area_only)
-
-    #%%
-    # IF LESION is too large us SLICMASK
-    # lesion_area_only = (lesion_area>0)*img[0]
-    # SCALAR_LIMIT_CLUSTER_SIZE = 340 # to make clusters size approx 40x40
-    # y_min, y_max, x_min, x_max = coords_min_max_2D(lesion_area_only>0)
-    # if np.sum(lesion_area_only>0) > SCALAR_LIMIT_CLUSTER_SIZE * 1 and (y_max-y_min) > 35 and (x_max-x_min) > 35:
-    #     numSegments = np.max([np.sum(lesion_area_only>0)//SCALAR_LIMIT_CLUSTER_SIZE,2]) # run slic with large segments to eliminate background & vessels
-    #     segments = slic((img[0]).astype('double'), n_segments = numSegments, mask=lesion_area_only>0, sigma = .2, multichannel=False, compactness=.1)
-    #     background, lesion_area, vessels = superpixels((img[0]).astype('double'), segments, background_threshold=TRESH_BACK, vessel_threshold=THRES_VESSEL)
-    # boundaries = mark_boundaries(lesion_area_only, segments)[...,0]
-    # plt.imshow(boundaries)
 
     #%%
     tgt_minis, tgt_minis_coords, tgt_minis_masks, tgt_minis_big, tgt_minis_coords_big, tgt_minis_masks_big = select_lesions_match_conditions2(segments, img[0], skip_index=0)
-    SEED_VALUE = .19
-    targets, coords, masks, seeds = make_list_of_targets_and_seeds(tgt_minis, tgt_minis_coords, tgt_minis_masks, seed_value=SEED_VALUE, seed_method='max')
+    targets, coords, masks, seeds = make_list_of_targets_and_seeds(tgt_minis, tgt_minis_coords, tgt_minis_masks, seed_value=args.SEED_VALUE, seed_method='max')
     targets_all.append(len(targets))
 
     coords_big = name_prefix.split('_')
@@ -261,7 +243,7 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
     ax[0,1].imshow(scan[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]])
     ax[0,1].imshow(scan_mask[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]], alpha=.3)
     ax[0,2].imshow(img[0])
-    ax[0,2].imshow(mask[0],alpha=.3)
+    # ax[0,2].imshow(mask[0],alpha=.3)
     ax[1,0].imshow((background_plot>0)*img[0], vmax=1)
     ax[1,0].text(5,5,'bckg',c='r', fontsize=12)
     ax[1,1].imshow((vessels_plot>0)*img[0], vmax=1)
@@ -277,19 +259,6 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
     # for axx in ax.ravel(): axx.axis('off')
     fig_slic.tight_layout()
 
-    # %%
-    # for (a,b,c,d) in zip(targets, coords, masks, seeds):
-    #     print(np.shape(a), b, np.shape(c), np.shape(d))
-    # %%
-    # rows=3; cols=3
-    # fig, ax = plt.subplots(3,3,figsize=(rows*4,cols*4))
-    # for idx_fig, (i,j) in enumerate(zip(targets,seeds)):
-    # if idx_fig == rows*cols: break
-    #     ax.flat[idx_fig].imshow(i[...,0])
-    #     ax.flat[idx_fig].imshow(j, alpha=.3)
-    #     ax.flat[idx_fig].text(3,3,idx_fig,c='r')
-    # fig.tight_layout()
-
     # ======= CELLULAR AUTOMATA
 
     #%%
@@ -297,13 +266,9 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
     num_channels = 16
     epochs = 2500
     sample_size = 8
-    GROW_ON_K_ITER = 1
-    BACKGROUND_INTENSITY = 0.11 #.11 
-    STEP_SIZE = 1 #1 
-    SCALE_MASK = 10 #.19 
-    path_parent = '/content/drive/My Drive/Datasets/covid19/COVID-19-20_augs_cea/CeA_0x_max_clamp0'
-    path_save_synthesis_parent = f'{path_parent}_grow={GROW_ON_K_ITER}_bg={BACKGROUND_INTENSITY:.02f}_step={STEP_SIZE}_scale_mask={SCALE_MASK}_seed_value={SEED_VALUE}/'
-    path_save_synthesis = f'{path_save_synthesis_parent}{SCAN_NAME}'
+    path_parent = '/content/drive/My Drive/Datasets/covid19/COVID-19-20_augs_cea/CeA_BASE'
+    path_save_synthesis_parent = f'{path_parent}_grow={args.GROW_ON_K_ITER}_bg={args.BACKGROUND_INTENSITY:.02f}_step={args.STEP_SIZE}_scale={args.SCALE_MASK}_seed={args.SEED_VALUE}_ch0_1={args.CH0_1}_ch1_16={args.CH1_16}_ali_thr={args.ALIVE_THRESH}/'
+    path_save_synthesis = f'{path_save_synthesis_parent}{args.SCAN_NAME}/'
     Path(path_save_synthesis).mkdir(parents=True, exist_ok=True)#OMM
     path_synthesis_figs = f'{path_save_synthesis}fig_slic/'
     Path(f'{path_synthesis_figs}').mkdir(parents=True, exist_ok=True)
@@ -315,12 +280,13 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
         # if args.only_one_slice: # if 2nd argument is provided then only analyze that slice
         #     print(coord, int(args.only_one_slice))
         #     if idx_lesion != int(args.only_one_slice): continue
-        print(f'==== LESION {idx_mini_batch}/{len(train_ds)} CLUSTER {idx_lesion}/{len(coords)}. {name_prefix}')
+        print(f'==== LESION {idx_mini_batch}/{len(ds_lesions)} CLUSTER {idx_lesion}/{len(coords)}. {name_prefix}')
         # prepare seed
         seed, seed_tensor, seed_pool = prepare_seed(target, this_seed, device, num_channels = num_channels, pool_size = 1024)
 
         # initialize model
-        model = CeA_0x(device = device, grow_on_k_iter=GROW_ON_K_ITER, background_intensity=BACKGROUND_INTENSITY, step_size=STEP_SIZE, scale_mask=SCALE_MASK)
+        model = CeA_BASE(device = device, grow_on_k_iter=args.GROW_ON_K_ITER, background_intensity=args.BACKGROUND_INTENSITY, 
+        step_size=args.STEP_SIZE, scale_mask=args.SCALE_MASK, pretrain_thres=args.PRETRAIN, ch0_1=args.CH0_1, ch1_16=args.CH1_16, alive_thresh=args.ALIVE_THRESH)
         optimizer = torch.optim.Adam(model.parameters(), lr = 1e-3)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1500,2500], gamma=0.1) ## keep 1e-4 longer
         model_str = correct_label_in_plot(model)
@@ -338,7 +304,10 @@ for idx_mini_batch,mini_batch in enumerate(train_loader):
         inner_iter = 100
         inner_iters=[]
         for i in range(epochs):
-            inner_iter, inner_iter_aux = epochs_in_inner_loop(i, inner_iter_aux, inner_iter)
+            if i%100 ==0: print(f'epoch={i}')
+
+            if args.INNER_ITER == 0: # 0 for increasing, 1 for constant
+                inner_iter, inner_iter_aux = epochs_in_inner_loop(i, inner_iter_aux, inner_iter)
             inner_iters.append(inner_iter)
 
             scheduler.step()

@@ -162,8 +162,8 @@ def get_xforms_load(mode="load", keys=("image", "label")):
 def main():
     data_folder = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/Train'
     folder_dest = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/'
-    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:10] #OMM
-    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:10] #OMM
+    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[10:] #OMM
+    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[10:] #OMM
     # =====
     keys = ("image", "label")
     train_frac, val_frac = 0.8, 0.2
