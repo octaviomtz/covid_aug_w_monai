@@ -176,7 +176,7 @@ val_loader = monai.data.DataLoader(
 # create BasicUNet, DiceLoss and Adam optimizer
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 net = get_net().to(device)
-max_epochs, lr, momentum = 3, 1e-4, 0.95
+max_epochs, lr, momentum = 1, 1e-4, 0.95
 opt = torch.optim.Adam(net.parameters(), lr=lr)
 
 # %%

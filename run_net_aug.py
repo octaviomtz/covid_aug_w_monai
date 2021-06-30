@@ -54,6 +54,8 @@ def get_xforms(mode="train", keys=("image", "label")):
         xforms.extend(
             [
                 SpatialPadd(keys, spatial_size=(192, 192, -1), mode="reflect"),  # ensure at least 192x192
+                RandCropByPosNegLabeld(keys, label_key=keys[1], 
+                spatial_size=(192, 192, 16), num_samples=3),
                 RandAffined(
                     keys,
                     prob=0.15,
@@ -62,8 +64,6 @@ def get_xforms(mode="train", keys=("image", "label")):
                     mode=("bilinear", "nearest"),
                     as_tensor_output=False,
                 ),
-                RandCropByPosNegLabeld(keys, label_key=keys[1], 
-                spatial_size=(192, 192, 16), num_samples=3),
                 RandGaussianNoised(keys[0], prob=0.15, std=0.01),
                 RandFlipd(keys, spatial_axis=0, prob=0.5),
                 RandFlipd(keys, spatial_axis=1, prob=0.5),

@@ -1,2 +1,5 @@
 output/*
 runs/*
+*.ipynb
+train_base_146ep/*
+metrics_val/*
