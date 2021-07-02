@@ -38,9 +38,13 @@ import cv2
 from monai.transforms.transform import MapTransform
 from monai.config import KeysCollection
 from typing import Dict, Hashable, Mapping, Union
-#%%
-from utils_replace_lesions import get_decreasing_sequence 
+from utils_replace_lesions import get_decreasing_sequence, crop_and_pad 
 from utils_replace_lesions import read_cea_aug_slice2, pseudo_healthy_with_texture, to_torch_right_shape, normalize_new_range4, get_orig_scan_in_lesion_coords, make_mask_ring
+from scipy.ndimage import affine_transform
+
+#%%
+%reload_ext autoreload
+%autoreload 2
 
 #%%
 path_parent = Path('/content/drive/My Drive/Datasets/covid19/COVID-19-20_augs_cea/')
@@ -65,12 +69,38 @@ print(f'train_files={len(train_files)}, val_files={len(val_files)}')
 path_synthesis_old = '/content/drive/My Drive/Datasets/covid19/results/cea_synthesis/patient0/'
 texture_orig = np.load(f'{path_synthesis_old}texture.npy.npz')
 texture_orig = texture_orig.f.arr_0
-texture = texture_orig + np.abs(np.min(texture_orig))# + .07
+texture = texture_orig + np.abs(np.min(texture_orig)) + .07
 
 # %%
 scans_syns = os.listdir(path_synthesis)
 decreasing_sequence = get_decreasing_sequence(255, splits= 20)
 keys2=("image", "label", "synthetic_lesion")
+
+#%%
+class PrintTypesShapes(MapTransform):
+    """
+    Dictionary-based wrapper of :py:class:`monai.transforms.Identity`.
+    """
+
+    def __init__(self, keys: KeysCollection, allow_missing_keys: bool = False) -> None:
+        """
+        Args:
+            keys: keys of the corresponding items to be transformed.
+                See also: :py:class:`monai.transforms.compose.MapTransform`
+            allow_missing_keys: don't raise exception if key is missing.
+
+        """
+        super().__init__(keys, allow_missing_keys)
+        # self.identity = Identity()
+
+    def __call__(
+        self, data: Mapping[Hashable, Union[np.ndarray, torch.Tensor]]
+    ) -> Dict[Hashable, Union[np.ndarray, torch.Tensor]]:
+        d = dict(data)
+        for key in self.key_iterator(d):
+            print(f"PPPPPPP={key, type(d[key]), d[key].shape, d[key].dtype}")
+            # d[key] = self.identity(d[key])
+        return d
 
 # %%
 # WITH FOR LOOP
@@ -113,10 +143,6 @@ class TransCustom(MapTransform): # from Identityd
         #===
         # print(d.keys())
         print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
-        # print(d.get('label_transforms')[4].get('extra_info').get('center'),
-        #       d.get('label_transforms')[5].get('do_transforms'), #UP
-        #       d.get('label_transforms')[6].get('do_transforms'), #LR 
-        #       d.get('label_transforms')[7].get('do_transforms')) #CH
 
         
         SCAN_NAME = d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0] 
@@ -126,15 +152,18 @@ class TransCustom(MapTransform): # from Identityd
         path_synthesis2 = f'{str(path_synthesis)}/{SCAN_NAME}/'
         # print(f'path_synthesis2 = {path_synthesis2}')
         print(f'SCAN_NAME = {SCAN_NAME}, SLICE = {SLICE}')
-        scan_slices = torch.tensor(())
+        # scan_slices = torch.tensor(())
+        scan_slices = np.array([], dtype=np.float32).reshape(0,192,192)
+        label_slices = np.array([], dtype=np.uint8).reshape(0,192,192)
         if SCAN_NAME in self.scans_syns:
           print('the scan selected has augmentions')
           
           for SLICE_IDX, SLICE_I in enumerate(np.arange(SLICE - self._half_num_slices, SLICE + self._half_num_slices,1)):
             scan_slice = np.squeeze(d.get('image_1')[self.BATCH_SCAN,...,SLICE_I])
-            print(f'scan_slice = {scan_slice.shape}, forloop idx={SLICE_IDX}') 
+            label_slice = np.squeeze(d.get('label_1')[self.BATCH_SCAN,...,SLICE_I])
+            # print(f'scan_slice = {scan_slice.shape}, forloop idx={SLICE_IDX}') 
             lesions_all, coords_all, masks_all, names_all, loss_all = self.func_read_cea_aug(path_synthesis2, SLICE_I)
-            print(len(lesions_all), len(coords_all), len(masks_all), len(names_all), len(loss_all))
+            # print(len(lesions_all), len(coords_all), len(masks_all), len(names_all), len(loss_all))
             
             if len(lesions_all) > 0:
               slice_healthy_inpain = pseudo_healthy_with_texture(scan_slice, lesions_all, coords_all, masks_all, names_all, texture)
@@ -174,23 +203,29 @@ class TransCustom(MapTransform): # from Identityd
               if self.mask_outer_ring:
                 slice_healthy_inpain = inpaint.inpaint_biharmonic(slice_healthy_inpain, mask_for_inpain)
               
-              print(f'slice_healthy_inpain = {slice_healthy_inpain.shape, type(slice_healthy_inpain)}') 
-              print('0000: yes augs yes lesion, adding slice_healthy_inpain')
-              scan_slices = torch.cat((scan_slices, to_torch_right_shape(slice_healthy_inpain, CENTER_Y, CENTER_X)), 0)
+            #   print(f'slice_healthy_inpain = {slice_healthy_inpain.shape, type(slice_healthy_inpain)}') 
+            #   print('0000: yes augs yes lesion, adding slice_healthy_inpain')
+              scan_slices = np.concatenate((scan_slices, crop_and_pad(slice_healthy_inpain, CENTER_Y, CENTER_X)), 0)
+              label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
             else:
-              print('1111: yes augs no lesion, adding scan_slice')
-              scan_slices = torch.cat((scan_slices, to_torch_right_shape(scan_slice, CENTER_Y, CENTER_X)), 0)
+            #   print('1111: yes augs no lesion, adding scan_slice')
+              scan_slices = np.concatenate((scan_slices, crop_and_pad(scan_slice, CENTER_Y, CENTER_X)), 0)
+              label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
         else:
           for SLICE_I in np.arange(SLICE - self._half_num_slices, SLICE + self._half_num_slices,1):
             scan_slice = np.squeeze(d.get('image_1')[self.BATCH_SCAN,...,SLICE_I])
-            print('2222: no augmentations, adding scan_slice')
-            scan_slices = torch.cat((scan_slices, to_torch_right_shape(scan_slice, CENTER_Y, CENTER_X)), 0) 
-        scan_slices = torch.unsqueeze(torch.swapaxes(scan_slices,0,-1),0) # np.zeros_like(d['image_1'][0,...,0]).shape
+            label_slice = np.squeeze(d.get('label_1')[self.BATCH_SCAN,...,SLICE_I])
+            # print('2222: no augmentations, adding scan_slice')
+            scan_slices = np.concatenate((scan_slices, crop_and_pad(scan_slice, CENTER_Y, CENTER_X)), 0) 
+            label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
+        # scan_slices = torch.unsqueeze(torch.swapaxes(scan_slices,0,-1),0) # np.zeros_like(d['image_1'][0,...,0]).shape
+        scan_slices = np.expand_dims(np.swapaxes(scan_slices,0,-1),0) # np.zeros_like(d['image_1'][0,...,0]).shape
+        label_slices = np.expand_dims(np.swapaxes(label_slices,0,-1),0)
         d['synthetic_lesion'] = scan_slices
-        print(f'LOOP_DONE = {scan_slices.shape}')
+        d['synthetic_label'] = label_slices
+        print(f'LOOP_DONE = {scan_slices.shape, label_slices.shape}')
 
         return d
-
 
 # %%
 class TransCustom2(MapTransform):
@@ -210,17 +245,27 @@ class TransCustom2(MapTransform):
         flip0 = d.get('label_transforms')[5].get('do_transforms')
         flip1 = d.get('label_transforms')[6].get('do_transforms')
         flip2 = d.get('label_transforms')[7].get('do_transforms')
+        affine_matrix = d.get('label_transforms')[4].get('extra_info').get('affine')
         print(f'FLIPS = {flip0, flip1, flip2}')
-        print(f"apply =>{d.get('synthetic_lesion').shape}")
-        array = np.squeeze(d.get('synthetic_lesion'))
+        array_trans = d.get('synthetic_lesion')
+        array_trans_lab = d.get('synthetic_label')
+        # print(f"affine before =>{array_trans.shape}")
+        array_trans = np.rot90(array_trans,1,axes=[1,2])
+        array_trans_lab = np.rot90(array_trans_lab,1,axes=[1,2])
+        # print(f"affine after =>{array_trans.shape}")
+        array_trans = np.squeeze(array_trans)
+        array_trans_lab = np.squeeze(array_trans_lab)
         if flip0:
-          array = np.flip(array,[0])
+            array_trans = np.flip(array_trans,[0]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[0]).copy()
         if flip1:
-          array = np.flip(array,[1])
+            array_trans = np.flip(array_trans,[1]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[1]).copy()
         if flip2:
-          array = np.flip(array,[2])
-        # d['synthetic_lesion'] = torch.unsqueeze(torch.from_numpy(array.copy()),0)
-        d['synthetic_lesion'] = np.expand_dims(array,0)
+            array_trans = np.flip(array_trans,[2]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[2]).copy()
+        d['synthetic_lesion'] = np.expand_dims(array_trans.copy(),0)
+        d['synthetic_label'] = np.expand_dims(array_trans_lab.copy(),0)
         # for key in self.key_iterator(d):
         #     d[key] = self.identity(d[key])
         return d
@@ -245,25 +290,25 @@ def get_xforms_with_synthesis(mode="synthesis", keys=("image", "label"), keys2=(
                               pseudo_healthy_with_texture, scans_syns, decreasing_sequence, GEN=15,
                               POST_PROCESS=True, mask_outer_ring=True, new_value=.5),
                   RandAffined(
-                      keys2,
-                      # keys,
+                      keys,
                       prob=0.15,
                       rotate_range=(0.05, 0.05, None),  # 3 parameters control the transform on 3 dimensions
                       scale_range=(0.1, 0.1, None), 
-                      mode=("bilinear", "nearest", "bilinear"),
-                      # mode=("bilinear", "nearest"),
-                      as_tensor_output=False,
+                    #   mode=("bilinear", "nearest", "bilinear"),
+                      mode=("bilinear", "nearest"),
+                      as_tensor_output=False
                   ),
                   
-                  RandGaussianNoised((keys2[0],keys2[2]), prob=0.15, std=0.01),
-                  # RandGaussianNoised(keys[0], prob=0.15, std=0.01),
-                  RandFlipd(keys2, spatial_axis=0, prob=0.5),
-                  RandFlipd(keys2, spatial_axis=1, prob=0.5),
-                  RandFlipd(keys2, spatial_axis=2, prob=0.5),
-                  # TransCustom2(keys2)
+                #   RandGaussianNoised((keys2[0],keys2[2]), prob=0.15, std=0.01),
+                  RandGaussianNoised(keys[0], prob=0.15, std=0.01),
+                  RandFlipd(keys, spatial_axis=0, prob=0.5),
+                  RandFlipd(keys, spatial_axis=1, prob=0.5),
+                  RandFlipd(keys, spatial_axis=2, prob=0.5),
+                  TransCustom2(keys2)
               ])
-    dtype = (np.float32, np.uint8, np.float32)
-    xforms.extend([CastToTyped(keys2, dtype=dtype)])
+    dtype = (np.float32, np.uint8)
+    # dtype = (np.float32, np.uint8, np.float32)
+    xforms.extend([CastToTyped(keys, dtype=dtype)])
     return monai.transforms.Compose(xforms)
 
 # %%
@@ -293,6 +338,27 @@ for idx_batch in range(sample_syn['image'].shape[0]):
     ax[idx_batch, i].imshow(sample_syn['label'][idx_batch,0,...,i+8], alpha=.3)
     ax[idx_batch, i].axis('off')
 fig.tight_layout()
+
+# %%
+# PLOT CUSTOM FIGS
+fig, ax = plt.subplots(3,4, figsize=(12,8))
+for idx_batch in range(sample_syn['synthetic_lesion'].shape[0]):
+  for i in range(4):
+    ax[idx_batch, i].imshow(sample_syn['synthetic_lesion'][idx_batch,0,...,i+8])
+    ax[idx_batch, i].imshow(sample_syn['synthetic_label'][idx_batch,0,...,i+8], alpha=.3)
+    ax[idx_batch, i].axis('off')
+fig.tight_layout()
+
+#%%
+# PLOT IMG FIGS
+fig, ax = plt.subplots(3,4, figsize=(12,8))
+for idx_batch in range(sample_syn['image'].shape[0]):
+  for i in range(4):
+    ax[idx_batch, i].imshow(sample_syn['image'][idx_batch,0,...,i+8])
+    ax[idx_batch, i].imshow(sample_syn['label'][idx_batch,0,...,i+8], alpha=.3)
+    ax[idx_batch, i].axis('off')
+fig.tight_layout()
+
 # %%
 print('with CUSTOM AUGS')
 print(sample_syn.keys())
@@ -301,12 +367,162 @@ print(f"label = {sample_syn.get('label').shape}")
 print(f"image_1 = {sample_syn.get('image_1').shape}")
 print(f"label_1 = {sample_syn.get('label_1').shape}")
 print(f"synthetic_lesion = {sample_syn.get('synthetic_lesion').shape}")
+
 # %%
-fig, ax = plt.subplots(3,4, figsize=(12,8))
-for idx_batch in range(sample_syn['synthetic_lesion'].shape[0]):
-  for i in range(4):
-    ax[idx_batch, i].imshow(sample_syn['synthetic_lesion'][idx_batch,0,...,i+8])
-    # ax[idx_batch, i].imshow(sample_syn['label'][idx_batch,0,...,i+8], alpha=.3)
-    ax[idx_batch, i].axis('off')
+# print(sample_syn.get('label_transforms')[4])
+arr_aff = sample_syn.get('label_transforms')[4].get('extra_info').get('affine')
+print(arr_aff.shape)
+print(arr_aff)
+# %%
+aa = sample_syn['synthetic_lesion'][0]
+print(f'aa={aa.shape}')
+print(f'aff={arr_aff[0].shape}')
+print(aa.shape, arr_aff[0].shape)
+# bb = affine_transform(aa[0], arr_aff[0][:3,:3])
+# print(f'bb={bb.shape}')
+
+#%%
+sample_syn.keys()
+
+#%%
+# True, False, True   | 2
+# True, True, True,   | 1
+# True, False, False  | 2
+# False, False, False | 
+IDX=1
+orig = sample_syn.get('image')[IDX].numpy()
+label = sample_syn.get('label')[IDX].numpy()
+cust = sample_syn.get('synthetic_lesion')[IDX].numpy()
+cust1 = np.flip(cust,3)
+cust1 = np.flip(cust1,1)
+# cust1 = np.flip(cust1,3)
+# cust1 = np.flip(cust1,2)
+print(orig.shape, cust.shape)
+fig, ax = plt.subplots(1,3,figsize=(9,3))
+ax[0].imshow(orig[0,...,8])
+ax[0].imshow(label[0,...,8], alpha=.3)
+ax[1].imshow(cust[0,...,8])
+ax[2].imshow(cust1[0,...,8])
+ax[2].imshow(label[0,...,8], alpha=.3)
 fig.tight_layout()
+
+#%%
+# CHECK THE ORDER OF THESE TRANSFORMS 
+arr_aff = sample_syn.get('label_transforms')[4]
+arr_aff
+
+#%%
+fig, ax = plt.subplots(2,5, figsize=(18,9))
+for i in range(10):
+    ax.flat[i].imshow(cust1[0,...,i+4])
+fig.tight_layout()
+
+#%%
+from utils_replace_lesions import crop_and_pad_multiple_x1
+
+#%%
+aa = sample_syn.get('image_1')[0].numpy()
+print(aa.shape)
+bb = crop_and_pad(aa[0,...,10], 100, 100)
+print(bb.shape)
+cc = crop_and_pad_multiple_x1(aa[0,...,10:26], 100, 100)
+print(cc.shape)
+
+#%%
+from monai.transforms import Affine
+
+#%%
+affine = Affine(
+    rotate_params=np.pi / 4,
+    scale_params=(1.2, 1.2),
+    translate_params=(200, 40),
+    padding_mode="zeros",
+)
+a0 = aa[...,8]
+new_img, _ = affine(a0, (192, 192), mode="bilinear")
+print(new_img.shape)
+plt.imshow(new_img[0])
+
+#%%
+aa = sample_syn.get('image').numpy()
+print(aa.shape)
+print(np.min(aa), np.max(aa))
+aa = np.clip(aa,0,1)
+print(np.min(aa), np.max(aa))
+
+#%%
+arr_aff = sample_syn.get('label_transforms')[4].get('extra_info').get('affine')[0]
+arr_aff
+
+#%%
+import cv2
+
+#%%
+bb = cv2.cvtColor(aa, cv2.COLOR_GRAY2BGR)
+bb.shape
+
+#%%
+fig, ax = plt.subplots(1,2)
+ax[0].imshow(aa[0,...,8])
+ax[1].imshow(bb[...,8])
+# %%
+arr_aff[0][:3,:3].shape
+# %%
+sample_syn.get('label_transforms')[4]
+
+
+
+# %%
+from scipy.ndimage import interpolation
+a0 = aa[0,...,7:9].numpy()
+print(a0.shape, arr_aff[0].shape)
+plt.imshow(a0[...,0])
+
+#%%
+a0 = np.swapaxes(a0,-1,0)
+a0.shape
+
+#%%
+a0 = aa.numpy()[0,...,:2]
+aff = arr_aff.numpy()[:3,:3]
+print(a0.shape, aff.shape)
+s1 = 192.0/2
+s2 = int(s1*2) 
+c_in=0.5*np.array(a0.shape)
+c_out=np.array((s1,s1,2))
+print(c_in, c_out)
+transform = aff
+offset = c_in-c_out.dot(transform)
+dst=interpolation.affine_transform(
+  a0,transform.T,order=2,offset=offset,output_shape=(s2,s2),cval=0.0,output=np.float32)
+np.shape(dst)
+
+#%%
+aff
+# %%
+fig, ax = plt.subplots(1,7,figsize=(18,3))
+s1 = 192.0/2
+s2 = int(s1*2) 
+c_in=0.5*np.array(a0.shape)
+c_out=np.array((s1,s1))
+for i in np.arange(0,7):
+    a=i*15.0*np.pi/180.0
+    transform=np.array([[np.cos(a),-np.sin(a)],[np.sin(a),np.cos(a)]])
+    offset=c_in-c_out.dot(transform)
+    dst=interpolation.affine_transform(
+        a0,transform.T,order=2,offset=offset,output_shape=(s2,s2),cval=0.0,output=np.float32)
+    
+    # plt.subplot(1,7,i+1);
+    ax[i].axis('off');
+    ax[i].imshow(dst)
+plt.show()
+# %%
+a0.shape
+# %%
+plt.imshow(dst)
+# %%
+transform
+
+# %%
+arr_aff[0]
 # %%
