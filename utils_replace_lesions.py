@@ -126,7 +126,7 @@ def pseudo_healthy_with_texture(scan_slice, lesions_all, coords_all, masks_all, 
     for idx_x, (lesion, coord, mask, name) in enumerate(zip(lesions_all, coords_all, masks_all, names_all)):
         coords_big = [int(i) for i in name.split('_')[1:5]]
         coords_sums = coord + coords_big
-        print(coord, coords_big, coords_sums[0], coords_sums[2], name)
+        # print('LOADING: ', coord, coords_big, coords_sums[0], coords_sums[2], name)
         new_coords_mask = np.where(mask==1)[0]+coords_sums[0], np.where(mask==1)[1]+coords_sums[2]
         slice_healthy[new_coords_mask] = texture[new_coords_mask]
         # rings to inpaint
@@ -247,15 +247,48 @@ def crop_and_pad(scan_slice, cy, cx, pad_to_this_len=192):
   cy2_pad = int(cy2_pad)
   cx1_pad = int(cx1_pad)
   cx2_pad = int(cx2_pad)
-  print(f'cut={cy1_cut,cy2_cut,cx1_cut,cx2_cut}')
-  print(f'padd={cy1_pad,cy2_pad,cx1_pad,cx2_pad}')
+#   print(f'cut={cy1_cut,cy2_cut,cx1_cut,cx2_cut}')
+#   print(f'padd={cy1_pad,cy2_pad,cx1_pad,cx2_pad}')
   scan_slice = scan_slice[cy-cy1_cut:cy+cy2_cut, cx-cx1_cut:cx+cx2_cut]
-  print(f'before pad = {np.shape(scan_slice)}')
+#   print(f'before pad = {np.shape(scan_slice)}')
   # scan_slice = nn.functional.pad(scan_slice,(cx1_pad,cx2_pad,cy1_pad,cy2_pad))
   scan_slice = np.pad(scan_slice, ((cy1_pad,cy2_pad),(cx1_pad,cx2_pad)),mode='reflect')
-  print(f'after pad = {np.shape(scan_slice)}')
+#   print(f'after pad = {np.shape(scan_slice)}')
   
   scan_slice = np.expand_dims(scan_slice,0)
+  # print(f'from crop_and_pad = {np.shape(scan_slice)}')
+  # use the centers to get the right position
+  return scan_slice
 
+def crop_and_pad_multiple_x1(scan_slice, cy, cx, pad_to_this_len=192):
+  '''Aux function of TransCustom that changes numpy array into the right shape.
+  1. We crop first only until now because the coords used to insert the lesions were based on
+  original coordinates.
+  2. After cropping we add pad if needed'''
+  pp = pad_to_this_len/2
+  sh_y, sh_x, _ = np.shape(scan_slice)
+
+  cy1_cut, cy1_pad = [(pp,0) if cy > pp else (cy,pp-cy)][0]
+  cy2_cut, cy2_pad = [(pp,0) if sh_y > cy + pp  else (sh_y-cy,cy+pp-sh_y)][0]
+  cx1_cut, cx1_pad = [(pp,0) if cx > pp else (cx,pp-cx)][0]
+  cx2_cut, cx2_pad = [(pp,0) if sh_x > cx + pp  else (sh_x-cx,cx+pp-sh_x)][0]
+  cy1_cut = int(cy1_cut)
+  cy2_cut = int(cy2_cut)
+  cx1_cut = int(cx1_cut)
+  cx2_cut = int(cx2_cut)
+  cy1_pad = int(cy1_pad)
+  cy2_pad = int(cy2_pad)
+  cx1_pad = int(cx1_pad)
+  cx2_pad = int(cx2_pad)
+#   print(f'cut={cy1_cut,cy2_cut,cx1_cut,cx2_cut}')
+#   print(f'padd={cy1_pad,cy2_pad,cx1_pad,cx2_pad}')
+  scan_slice = scan_slice[cy-cy1_cut:cy+cy2_cut, cx-cx1_cut:cx+cx2_cut, :]
+#   print(f'before pad = {np.shape(scan_slice)}')
+  # scan_slice = nn.functional.pad(scan_slice,(cx1_pad,cx2_pad,cy1_pad,cy2_pad))
+  scan_slice = np.pad(scan_slice, ((cy1_pad,cy2_pad),(cx1_pad,cx2_pad),(0,0)),mode='reflect')
+#   print(f'after pad = {np.shape(scan_slice)}')
+  
+  scan_slice = np.expand_dims(scan_slice,0)
+  # print(f'from crop_and_pad = {np.shape(scan_slice)}')
   # use the centers to get the right position
   return scan_slice
