@@ -292,3 +292,186 @@ def crop_and_pad_multiple_x1(scan_slice, cy, cx, pad_to_this_len=192):
   # print(f'from crop_and_pad = {np.shape(scan_slice)}')
   # use the centers to get the right position
   return scan_slice
+
+## classes for CeA synthesis
+class TransCustom(MapTransform): # from Identityd
+    """
+    Dictionary-based wrapper of :py:class:`monai.transforms.Identity`.
+    """
+
+    def __init__(self, keys: KeysCollection, path_synthesis, 
+                 func_read_cea_aug, func_pseudo_healthy, scans_syns, decreasing_sequence, 
+                 GEN, POST_PROCESS, mask_outer_ring, texture, new_value,
+                 allow_missing_keys: bool = False) -> None:
+        """
+        Args:
+            keys: keys of the corresponding items to be transformed.
+                See also: :py:class:`monai.transforms.compose.MapTransform`
+            allow_missing_keys: don't raise exception if key is missing.
+
+        """
+        super().__init__(keys, allow_missing_keys)
+        self.new_value = new_value
+        self.path_synthesis = path_synthesis
+        self.func_read_cea_aug = func_read_cea_aug
+        self.scans_syns = scans_syns
+        self.func_pseudo_healthy = func_pseudo_healthy
+        self.BATCH_SCAN = 0
+        self.decreasing_sequence = decreasing_sequence
+        self.GEN = GEN
+        self.POST_PROCESS = POST_PROCESS
+        self.mask_outer_ring = mask_outer_ring
+        self._half_num_slices = 8
+        self.texture = texture
+        # self.scan_slices = torch.tensor(()) #[]
+
+
+    def __call__(
+        self, data: Mapping[Hashable, Union[np.ndarray, torch.Tensor]]
+    ) -> Dict[Hashable, Union[np.ndarray, torch.Tensor]]:
+        d = dict(data)
+        
+        #===
+        # print(d.keys())
+        print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
+
+        print(f'KEYS={d.keys()}')
+        # print(f"TRANS:\n{d.get('label_transforms')}")
+        SCAN_NAME = d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0] 
+        SLICE = d.get('label_transforms')[3].get('extra_info').get('center')[-1]
+        CENTER_Y = d.get('label_transforms')[3].get('extra_info').get('center')[0]
+        CENTER_X = d.get('label_transforms')[3].get('extra_info').get('center')[1]
+        path_synthesis2 = f'{str(self.path_synthesis)}/{SCAN_NAME}/'
+        # print(f'path_synthesis2 = {path_synthesis2}')
+        print(f'SCAN_NAME = {SCAN_NAME}, SLICE = {SLICE}')
+        # scan_slices = torch.tensor(())
+        scan_slices = np.array([], dtype=np.float32).reshape(0,192,192)
+        label_slices = np.array([], dtype=np.uint8).reshape(0,192,192)
+        if SCAN_NAME in self.scans_syns:
+          print('the scan selected has augmentions')
+          
+          for SLICE_IDX, SLICE_I in enumerate(np.arange(SLICE - self._half_num_slices, SLICE + self._half_num_slices,1)):
+            
+            scan_slice = np.squeeze(d.get('image_1')[self.BATCH_SCAN,...,SLICE_I]) 
+            label_slice = np.squeeze(d.get('label_1')[self.BATCH_SCAN,...,SLICE_I]) 
+            # print(f'scan_slice = {scan_slice.shape}, forloop idx={SLICE_IDX}') 
+            lesions_all, coords_all, masks_all, names_all, loss_all = self.func_read_cea_aug(path_synthesis2, SLICE_I)
+            # print(len(lesions_all), len(coords_all), len(masks_all), len(names_all), len(loss_all))
+            
+            if len(lesions_all) > 0:
+              slice_healthy_inpain = pseudo_healthy_with_texture(scan_slice, lesions_all, coords_all, masks_all, names_all, self.texture)
+              
+              mse_lesions = []
+              mask_for_inpain = np.zeros_like(slice_healthy_inpain)
+              for idx_x, (lesion, coord, mask, name) in enumerate(zip(lesions_all, coords_all, masks_all, names_all)):
+                #get the right coordinates
+                coords_big = [int(i) for i in name.split('_')[1:5]]
+                coords_sums = coord + coords_big
+                new_coords_mask = np.where(mask==1)[0]+coords_sums[0], np.where(mask==1)[1]+coords_sums[2]
+                # syn_norm = lesion[GEN] *x_seq2[idx_x]
+                if self.GEN<60:
+                  if self.POST_PROCESS:
+                    syn_norm = normalize_new_range4(lesion[self.GEN], scan_slice[new_coords_mask])#, log_seq_norm2[idx_x])#, 0.19)
+                  else:
+                    syn_norm = lesion[self.GEN]
+                else:
+                  syn_norm = lesion[self.GEN]
+
+                # get the MSE between synthetic and original (for metrics)
+                orig_lesion = get_orig_scan_in_lesion_coords(scan_slice, new_coords_mask)
+                mse_lesions.append(np.mean(mask*(lesion[self.GEN] - orig_lesion)**2))
+
+                syn_norm = syn_norm * mask  
+
+                # add cea syn with absolute coords
+                new_coords = np.where(syn_norm>0)[0]+coords_sums[0], np.where(syn_norm>0)[1]+coords_sums[2]
+                slice_healthy_inpain[new_coords] = syn_norm[syn_norm>0]
+                
+                # inpaint the outer ring
+                if self.mask_outer_ring:
+                  mask_ring = make_mask_ring(syn_norm>0)
+                  new_coords_mask_inpain = np.where(mask_ring==1)[0]+coords_sums[0], np.where(mask_ring==1)[1]+coords_sums[2] # mask outer rings for inpaint
+                  mask_for_inpain[new_coords_mask_inpain] = 1
+                
+              if self.mask_outer_ring:
+                slice_healthy_inpain = inpaint.inpaint_biharmonic(slice_healthy_inpain, mask_for_inpain)
+              
+            #   print(f'slice_healthy_inpain = {slice_healthy_inpain.shape, type(slice_healthy_inpain)}') 
+            #   print('0000: yes augs yes lesion, adding slice_healthy_inpain')
+              scan_slices = np.concatenate((scan_slices, crop_and_pad(slice_healthy_inpain, CENTER_Y, CENTER_X)), 0)
+              label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
+            else:
+            #   print('1111: yes augs no lesion, adding scan_slice')
+              scan_slices = np.concatenate((scan_slices, crop_and_pad(scan_slice, CENTER_Y, CENTER_X)), 0)
+              label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
+        else:
+          for SLICE_I in np.arange(SLICE - self._half_num_slices, SLICE + self._half_num_slices,1):
+            scan_slice = np.squeeze(d.get('image_1')[self.BATCH_SCAN,...,SLICE_I])
+            label_slice = np.squeeze(d.get('label_1')[self.BATCH_SCAN,...,SLICE_I])
+            # print('2222: no augmentations, adding scan_slice')
+            scan_slices = np.concatenate((scan_slices, crop_and_pad(scan_slice, CENTER_Y, CENTER_X)), 0) 
+            label_slices = np.concatenate((label_slices, crop_and_pad(label_slice, CENTER_Y, CENTER_X)), 0)
+        # scan_slices = torch.unsqueeze(torch.swapaxes(scan_slices,0,-1),0) # np.zeros_like(d['image_1'][0,...,0]).shape
+        scan_slices = np.expand_dims(np.swapaxes(scan_slices,0,-1),0) # np.zeros_like(d['image_1'][0,...,0]).shape
+        label_slices = np.expand_dims(np.swapaxes(label_slices,0,-1),0)
+        d['synthetic_lesion'] = scan_slices
+        d['synthetic_label'] = label_slices
+        return d
+
+class TransCustom2(MapTransform):
+    """Dictionary-based wrapper of :py:class:`monai.transforms.Identity`."""
+
+    def __init__(self, keys, replace_image_for_synthetic:float = 0.333,
+    allow_missing_keys: bool = False) -> None:
+        """rotate90 to match rotation of 'image', then 
+        apply flips previously applied to 'image'."""
+        super().__init__(keys, allow_missing_keys)
+        self.replace_image_for_synthetic = replace_image_for_synthetic
+
+    def pad_because_monai_transf_is_not_doing_it(self, array):
+        _ , shy, shx, ch = np.shape(array)
+        size = 192
+        if (size - shy) > 0 or (size - shx) > 0:
+            print('we need to pad_because_monai_transf_is_not_doing_it')
+            array = np.pad(array, ((0,0),(0,size-shy),(0,size-shx),(0,0)),mode='reflect')
+        return array
+
+    def __call__(
+        self, data: Mapping[Hashable, Union[np.ndarray, torch.Tensor]]
+    ) -> Dict[Hashable, Union[np.ndarray, torch.Tensor]]:
+        d = dict(data)
+        flip0 = d.get('label_transforms')[5].get('do_transforms')
+        flip1 = d.get('label_transforms')[6].get('do_transforms')
+        flip2 = d.get('label_transforms')[7].get('do_transforms')
+        affine_matrix = d.get('label_transforms')[4].get('extra_info').get('affine')
+        print(f'FLIPS = {flip0, flip1, flip2}')
+        array_trans = d.get('synthetic_lesion')
+        array_trans_lab = d.get('synthetic_label')
+        aa = [np.shape(array_trans[0,...,i]) for i in range(16)]
+        print(f"affine before =>{array_trans.shape}, {aa}")
+        # array_trans = self.pad_because_monai_transf_is_not_doing_it(array_trans)
+        array_trans = np.rot90(array_trans,1,axes=[1,2])
+        array_trans_lab = np.rot90(array_trans_lab,1,axes=[1,2])
+        print(f"affine after =>{array_trans.shape}")
+        array_trans = np.squeeze(array_trans)
+        array_trans_lab = np.squeeze(array_trans_lab)
+        if flip0:
+            array_trans = np.flip(array_trans,[0]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[0]).copy()
+        if flip1:
+            array_trans = np.flip(array_trans,[1]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[1]).copy()
+        if flip2:
+            array_trans = np.flip(array_trans,[2]).copy()
+            array_trans_lab = np.flip(array_trans_lab,[2]).copy()
+        d['synthetic_lesion'] = np.expand_dims(array_trans.copy(),0)
+        d['synthetic_label'] = np.expand_dims(array_trans_lab.copy(),0)
+        if np.random.rand() > self.replace_image_for_synthetic:
+            print('SWITCHED image & synthesis')
+            # temp_image = d['synthetic_lesion']
+            # temp_label = d['synthetic_label']
+            # d['synthetic_lesion'] = d['image']
+            # d['synthetic_label'] = d['label']
+            d['image'] = d['synthetic_lesion']
+            d['label'] = d['synthetic_label']       
+        return d

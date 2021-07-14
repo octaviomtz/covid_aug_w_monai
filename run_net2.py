@@ -22,7 +22,7 @@ import torch.nn as nn
 from ignite.contrib.handlers import ProgressBar
 
 import monai
-from monai.handlers import CheckpointSaver, MeanDice, StatsHandler, ValidationHandler, MetricsSaver
+from monai.handlers import CheckpointSaver, MeanDice, StatsHandler, ValidationHandler, from_engine
 from monai.transforms import (
     AddChanneld,
     AsDiscreted,
@@ -36,7 +36,7 @@ from monai.transforms import (
     ScaleIntensityRanged,
     Spacingd,
     SpatialPadd,
-    ToTensord,
+    EnsureTyped,
 )
 
 
@@ -74,7 +74,7 @@ def get_xforms(mode="train", keys=("image", "label")):
         dtype = (np.float32, np.uint8)
     if mode == "infer":
         dtype = (np.float32,)
-    xforms.extend([CastToTyped(keys, dtype=dtype), ToTensord(keys)])
+    xforms.extend([CastToTyped(keys, dtype=dtype), EnsureTyped(keys)])
     return monai.transforms.Compose(xforms)
 
 
@@ -123,11 +123,11 @@ class DiceCELoss(nn.Module):
         return dice + cross_entropy
 
 
-def train(data_folder=".", model_folder="runs", continue_training=False):
+def train(data_folder=".", model_folder="runs"):
     """run a training pipeline."""
 
-    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz"))[:20]) #OMM
-    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz"))[:20]) #OMM
+    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:20] # XX
+    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:20] # XX
     logging.info(f"training: image/label ({len(images)}) folder: {data_folder}")
 
     amp = True  # auto. mixed precision
@@ -166,36 +166,26 @@ def train(data_folder=".", model_folder="runs", continue_training=False):
     # create BasicUNet, DiceLoss and Adam optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = get_net().to(device)
-
-    # if continue training
-    if continue_training:
-        ckpts = sorted(glob.glob(os.path.join(model_folder, "*.pt")))
-        ckpt = ckpts[-1]
-        logging.info(f"continue training using {ckpt}.")
-        net.load_state_dict(torch.load(ckpt, map_location=device))
-
-    # max_epochs, lr, momentum = 500, 1e-4, 0.95
-    max_epochs, lr, momentum = 20, 1e-4, 0.95 #OMM
+    max_epochs, lr, momentum = 500, 1e-4, 0.95
     logging.info(f"epochs {max_epochs}, lr {lr}, momentum {momentum}")
     opt = torch.optim.Adam(net.parameters(), lr=lr)
 
     # create evaluator (to be used to measure model quality during training
     val_post_transform = monai.transforms.Compose(
-        [AsDiscreted(keys=("pred", "label"), argmax=(True, False), to_onehot=True, n_classes=2)]
+        [EnsureTyped(keys=("pred", "label")), AsDiscreted(keys=("pred", "label"), argmax=(True, False), to_onehot=True, n_classes=2)]
     )
     val_handlers = [
         ProgressBar(),
-        MetricsSaver(save_dir="./metrics_val", metrics="*"),
-        CheckpointSaver(save_dir=model_folder, save_dict={"net": net}, save_key_metric=True, key_metric_n_saved=6),
+        CheckpointSaver(save_dir=model_folder, save_dict={"net": net}, save_key_metric=True, key_metric_n_saved=3),
     ]
     evaluator = monai.engines.SupervisedEvaluator(
         device=device,
         val_data_loader=val_loader,
         network=net,
         inferer=get_inferer(),
-        post_transform=val_post_transform, # postprocessing / post_transform
+        postprocessing=val_post_transform,
         key_val_metric={
-            "val_mean_dice": MeanDice(include_background=False, output_transform=lambda x: (x["pred"], x["label"]))
+            "val_mean_dice": MeanDice(include_background=False, output_transform=from_engine(["pred", "label"]))
         },
         val_handlers=val_handlers,
         amp=amp,
@@ -204,7 +194,7 @@ def train(data_folder=".", model_folder="runs", continue_training=False):
     # evaluator as an event handler of the trainer
     train_handlers = [
         ValidationHandler(validator=evaluator, interval=1, epoch_level=True),
-        StatsHandler(tag_name="train_loss", output_transform=lambda x: x["loss"]),
+        StatsHandler(tag_name="train_loss", output_transform=from_engine(["loss"], first=True)),
     ]
     trainer = monai.engines.SupervisedTrainer(
         device=device,
@@ -238,7 +228,7 @@ def infer(data_folder=".", model_folder="runs", prediction_folder="output"):
     net.eval()
 
     image_folder = os.path.abspath(data_folder)
-    images = sorted(glob.glob(os.path.join(image_folder, "*_ct.nii.gz"))[:10]) #OMM
+    images = sorted(glob.glob(os.path.join(image_folder, "*_ct.nii.gz")))
     logging.info(f"infer: image ({len(images)}) folder: {data_folder}")
     infer_files = [{"image": img} for img in images]
 
@@ -296,7 +286,7 @@ if __name__ == "__main__":
     """
     parser = argparse.ArgumentParser(description="Run a basic UNet segmentation baseline.")
     parser.add_argument(
-        "mode", metavar="mode", default="train", choices=("train", "infer", "continue_train"), type=str, help="mode of workflow"
+        "mode", metavar="mode", default="train", choices=("train", "infer"), type=str, help="mode of workflow"
     )
     parser.add_argument("--data_folder", default="", type=str, help="training data folder")
     parser.add_argument("--model_folder", default="runs", type=str, help="model folder")
@@ -304,11 +294,7 @@ if __name__ == "__main__":
 
     monai.config.print_config()
     monai.utils.set_determinism(seed=0)
-    logging.basicConfig(handlers=[
-        logging.FileHandler("./train_and_val.log"),
-        logging.StreamHandler()
-    ],
-    level=logging.INFO)
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
     if args.mode == "train":
         data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Train")
@@ -316,8 +302,5 @@ if __name__ == "__main__":
     elif args.mode == "infer":
         data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Validation")
         infer(data_folder=data_folder, model_folder=args.model_folder)
-    elif args.mode == "continue_train":
-        data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Train")
-        train(data_folder=data_folder, model_folder=args.model_folder, continue_training=True)
     else:
         raise ValueError("Unknown mode.")

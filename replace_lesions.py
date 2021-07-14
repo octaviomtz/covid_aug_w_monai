@@ -43,6 +43,9 @@ from utils_replace_lesions import read_cea_aug_slice2, pseudo_healthy_with_textu
 from scipy.ndimage import affine_transform
 
 #%%
+from monai.transforms.croppad.dictionary import RandCropByPosNegLabeld as RandCropByPosNegLabeld2
+
+#%%
 %reload_ext autoreload
 %autoreload 2
 
@@ -142,7 +145,7 @@ class TransCustom(MapTransform): # from Identityd
         
         #===
         # print(d.keys())
-        print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
+        # print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
 
         
         SCAN_NAME = d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0] 
@@ -223,20 +226,18 @@ class TransCustom(MapTransform): # from Identityd
         label_slices = np.expand_dims(np.swapaxes(label_slices,0,-1),0)
         d['synthetic_lesion'] = scan_slices
         d['synthetic_label'] = label_slices
-        print(f'LOOP_DONE = {scan_slices.shape, label_slices.shape}')
-
         return d
 
 # %%
 class TransCustom2(MapTransform):
     """Dictionary-based wrapper of :py:class:`monai.transforms.Identity`."""
 
-    def __init__(self, keys: KeysCollection, allow_missing_keys: bool = False) -> None:
+    def __init__(self, replace_image_for_synthetic:float = 0.333) -> None:
         """Args:
             keys: keys of the corresponding items to be transformed.
             allow_missing_keys: don't raise exception if key is missing."""
-        super().__init__(keys, allow_missing_keys)
-        # self.identity = Identity()
+        super().__init__(replace_image_for_synthetic)
+        self.replace_image_for_synthetic = replace_image_for_synthetic
 
     def __call__(
         self, data: Mapping[Hashable, Union[np.ndarray, torch.Tensor]]
@@ -266,9 +267,16 @@ class TransCustom2(MapTransform):
             array_trans_lab = np.flip(array_trans_lab,[2]).copy()
         d['synthetic_lesion'] = np.expand_dims(array_trans.copy(),0)
         d['synthetic_label'] = np.expand_dims(array_trans_lab.copy(),0)
-        # for key in self.key_iterator(d):
-        #     d[key] = self.identity(d[key])
+        if np.random.rand() > self.replace_image_for_synthetic:
+            print('SWITCHED image & synthesis')
+            temp_image = d['synthetic_lesion']
+            temp_label = d['synthetic_label']
+            d['synthetic_lesion'] = d['image']
+            d['synthetic_label'] = d['label']
+            d['image'] = temp_image
+            d['label'] = temp_label       
         return d
+
 # %%
 def get_xforms_with_synthesis(mode="synthesis", keys=("image", "label"), keys2=("image", "label", "synthetic_lesion")):
     """returns a composed transform for train/val/infer."""
@@ -284,27 +292,26 @@ def get_xforms_with_synthesis(mode="synthesis", keys=("image", "label"), keys2=(
     if mode == "synthesis":
         xforms.extend([
                   SpatialPadd(keys, spatial_size=(192, 192, -1), mode="reflect"),  # ensure at least 192x192
-                  RandCropByPosNegLabeld(keys, label_key=keys[1], 
-                  spatial_size=(192, 192, 16), num_samples=3), #XX should be num_samples=3
+                  RandCropByPosNegLabeld(keys, label_key=keys[1], spatial_size=(192, 192, 16), num_samples=3),
                   TransCustom(keys, path_synthesis, read_cea_aug_slice2, 
                               pseudo_healthy_with_texture, scans_syns, decreasing_sequence, GEN=15,
                               POST_PROCESS=True, mask_outer_ring=True, new_value=.5),
                   RandAffined(
-                      keys,
+                      # keys,
+                      keys2,
                       prob=0.15,
                       rotate_range=(0.05, 0.05, None),  # 3 parameters control the transform on 3 dimensions
                       scale_range=(0.1, 0.1, None), 
-                    #   mode=("bilinear", "nearest", "bilinear"),
-                      mode=("bilinear", "nearest"),
+                      mode=("bilinear", "nearest", "bilinear"),
+                      # mode=("bilinear", "nearest"),
                       as_tensor_output=False
                   ),
-                  
-                #   RandGaussianNoised((keys2[0],keys2[2]), prob=0.15, std=0.01),
-                  RandGaussianNoised(keys[0], prob=0.15, std=0.01),
+                  RandGaussianNoised((keys2[0],keys2[2]), prob=0.15, std=0.01),
+                  # RandGaussianNoised(keys[0], prob=0.15, std=0.01),
                   RandFlipd(keys, spatial_axis=0, prob=0.5),
                   RandFlipd(keys, spatial_axis=1, prob=0.5),
                   RandFlipd(keys, spatial_axis=2, prob=0.5),
-                  TransCustom2(keys2)
+                  TransCustom2(0.333)
               ])
     dtype = (np.float32, np.uint8)
     # dtype = (np.float32, np.uint8, np.float32)
@@ -338,6 +345,10 @@ for idx_batch in range(sample_syn['image'].shape[0]):
     ax[idx_batch, i].imshow(sample_syn['label'][idx_batch,0,...,i+8], alpha=.3)
     ax[idx_batch, i].axis('off')
 fig.tight_layout()
+
+#%% CHECK THE ORDER OF THESE TRANSFORMS 
+arr_aff = sample_syn.get('label_transforms')
+arr_aff
 
 # %%
 # PLOT CUSTOM FIGS
@@ -408,8 +419,10 @@ fig.tight_layout()
 
 #%%
 # CHECK THE ORDER OF THESE TRANSFORMS 
-arr_aff = sample_syn.get('label_transforms')[4]
+arr_aff = sample_syn.get('label_transforms')
 arr_aff
+
+
 
 #%%
 fig, ax = plt.subplots(2,5, figsize=(18,9))

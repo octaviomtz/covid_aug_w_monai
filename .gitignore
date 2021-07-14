@@ -4,3 +4,6 @@ runs/*
 train_base_146ep/*
 metrics_val/*
 __pycache__/utils_replace_lesions.cpython-37.pyc
+train_base_60_maybe_delete/*
+run_net1.5.py
+run_net_TEMP.py
