@@ -333,9 +333,9 @@ class TransCustom(MapTransform): # from Identityd
         
         #===
         # print(d.keys())
-        print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
+        # print(f"scan={d['image'].shape, d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0]}")
 
-        print(f'KEYS={d.keys()}')
+        # print(f'KEYS={d.keys()}')
         # print(f"TRANS:\n{d.get('label_transforms')}")
         SCAN_NAME = d.get('label_meta_dict').get('filename_or_obj').split('Train/')[-1].split('_seg')[0] 
         SLICE = d.get('label_transforms')[3].get('extra_info').get('center')[-1]
@@ -343,12 +343,12 @@ class TransCustom(MapTransform): # from Identityd
         CENTER_X = d.get('label_transforms')[3].get('extra_info').get('center')[1]
         path_synthesis2 = f'{str(self.path_synthesis)}/{SCAN_NAME}/'
         # print(f'path_synthesis2 = {path_synthesis2}')
-        print(f'SCAN_NAME = {SCAN_NAME}, SLICE = {SLICE}')
+        # print(f'SCAN_NAME = {SCAN_NAME}, SLICE = {SLICE}')
         # scan_slices = torch.tensor(())
         scan_slices = np.array([], dtype=np.float32).reshape(0,192,192)
         label_slices = np.array([], dtype=np.uint8).reshape(0,192,192)
         if SCAN_NAME in self.scans_syns:
-          print('the scan selected has augmentions')
+          # print('the scan selected has augmentions')
           
           for SLICE_IDX, SLICE_I in enumerate(np.arange(SLICE - self._half_num_slices, SLICE + self._half_num_slices,1)):
             
@@ -444,15 +444,15 @@ class TransCustom2(MapTransform):
         flip1 = d.get('label_transforms')[6].get('do_transforms')
         flip2 = d.get('label_transforms')[7].get('do_transforms')
         affine_matrix = d.get('label_transforms')[4].get('extra_info').get('affine')
-        print(f'FLIPS = {flip0, flip1, flip2}')
+        # print(f'FLIPS = {flip0, flip1, flip2}')
         array_trans = d.get('synthetic_lesion')
         array_trans_lab = d.get('synthetic_label')
         aa = [np.shape(array_trans[0,...,i]) for i in range(16)]
-        print(f"affine before =>{array_trans.shape}, {aa}")
+        # print(f"affine before =>{array_trans.shape}, {aa}")
         # array_trans = self.pad_because_monai_transf_is_not_doing_it(array_trans)
         array_trans = np.rot90(array_trans,1,axes=[1,2])
         array_trans_lab = np.rot90(array_trans_lab,1,axes=[1,2])
-        print(f"affine after =>{array_trans.shape}")
+        # print(f"affine after =>{array_trans.shape}")
         array_trans = np.squeeze(array_trans)
         array_trans_lab = np.squeeze(array_trans_lab)
         if flip0:
@@ -467,11 +467,36 @@ class TransCustom2(MapTransform):
         d['synthetic_lesion'] = np.expand_dims(array_trans.copy(),0)
         d['synthetic_label'] = np.expand_dims(array_trans_lab.copy(),0)
         if np.random.rand() > self.replace_image_for_synthetic:
-            print('SWITCHED image & synthesis')
+            # print('SWITCHED image & synthesis')
             # temp_image = d['synthetic_lesion']
             # temp_label = d['synthetic_label']
             # d['synthetic_lesion'] = d['image']
             # d['synthetic_label'] = d['label']
             d['image'] = d['synthetic_lesion']
             d['label'] = d['synthetic_label']       
+        return d
+
+class PrintTypesShapes(MapTransform):
+    """
+    Dictionary-based wrapper of :py:class:`monai.transforms.Identity`.
+    """
+
+    def __init__(self, keys, text, allow_missing_keys: bool = False) -> None:
+        """
+        Args:
+            keys: keys of the corresponding items to be transformed.
+                See also: :py:class:`monai.transforms.compose.MapTransform`
+            allow_missing_keys: don't raise exception if key is missing.
+
+        """
+        super().__init__(keys, allow_missing_keys)
+        self.text = text
+        # self.identity = Identity()
+
+    def __call__(
+        self, data: Mapping[Hashable, Union[np.ndarray, torch.Tensor]]
+    ) -> Dict[Hashable, Union[np.ndarray, torch.Tensor]]:
+        d = dict(data)
+        for key in self.key_iterator(d):
+            print(f"{self.text}={key, type(d[key]), d[key].shape, d[key].dtype}")
         return d

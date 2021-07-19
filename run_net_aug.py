@@ -59,195 +59,195 @@ import cv2
 # from monai.data.utils import pad_list_data_collate
 
 #%% CLASSES ADDED 
-from typing import Sequence, Optional, List, Tuple
-from monai.utils import ensure_tuple_rep, fall_back_tuple
-from monai.transforms.utils import map_binary_to_indices, generate_pos_neg_label_crop_centers
-from copy import deepcopy
-from monai.transforms.croppad.array import SpatialCrop
-from monai.transforms.transform import RandomizableTransform, Transform
-from monai.utils.enums import InverseKeys
-from monai.utils import ImageMetaKey as Key
-class InvertibleTransform(Transform):
-    """
-    """
+# from typing import Sequence, Optional, List, Tuple
+# from monai.utils import ensure_tuple_rep, fall_back_tuple
+# from monai.transforms.utils import map_binary_to_indices, generate_pos_neg_label_crop_centers
+# from copy import deepcopy
+# from monai.transforms.croppad.array import SpatialCrop
+# from monai.transforms.transform import RandomizableTransform, Transform
+# from monai.utils.enums import InverseKeys
+# from monai.utils import ImageMetaKey as Key
+# class InvertibleTransform(Transform):
+#     """
+#     """
 
-    def push_transform(
-        self,
-        data: dict,
-        key: Hashable,
-        extra_info: Optional[dict] = None,
-        orig_size: Optional[Tuple] = None,
-    ) -> None:
-        """Append to list of applied transforms for that key."""
-        key_transform = str(key) + InverseKeys.KEY_SUFFIX
-        info = {
-            InverseKeys.CLASS_NAME: self.__class__.__name__,
-            InverseKeys.ID: id(self),
-        }
-        if orig_size is not None:
-            info[InverseKeys.ORIG_SIZE] = orig_size
-        elif hasattr(data[key], "shape"):
-            info[InverseKeys.ORIG_SIZE] = data[key].shape[1:]
-        if extra_info is not None:
-            info[InverseKeys.EXTRA_INFO] = extra_info
-        # If class is randomizable transform, store whether the transform was actually performed (based on `prob`)
-        if isinstance(self, RandomizableTransform):
-            info[InverseKeys.DO_TRANSFORM] = self._do_transform
-        # If this is the first, create list
-        if key_transform not in data:
-            data[key_transform] = []
-        data[key_transform].append(info)
-
-
-    def check_transforms_match(self, transform: dict) -> None:
-        """Check transforms are of same instance."""
-        if transform[InverseKeys.ID] == id(self):
-            return
-        # basic check if multiprocessing uses 'spawn' (objects get recreated so don't have same ID)
-        if (
-            torch.multiprocessing.get_start_method(allow_none=False) == "spawn"
-            and transform[InverseKeys.CLASS_NAME] == self.__class__.__name__
-        ):
-            return
-        raise RuntimeError("Should inverse most recently applied invertible transform first")
+#     def push_transform(
+#         self,
+#         data: dict,
+#         key: Hashable,
+#         extra_info: Optional[dict] = None,
+#         orig_size: Optional[Tuple] = None,
+#     ) -> None:
+#         """Append to list of applied transforms for that key."""
+#         key_transform = str(key) + InverseKeys.KEY_SUFFIX
+#         info = {
+#             InverseKeys.CLASS_NAME: self.__class__.__name__,
+#             InverseKeys.ID: id(self),
+#         }
+#         if orig_size is not None:
+#             info[InverseKeys.ORIG_SIZE] = orig_size
+#         elif hasattr(data[key], "shape"):
+#             info[InverseKeys.ORIG_SIZE] = data[key].shape[1:]
+#         if extra_info is not None:
+#             info[InverseKeys.EXTRA_INFO] = extra_info
+#         # If class is randomizable transform, store whether the transform was actually performed (based on `prob`)
+#         if isinstance(self, RandomizableTransform):
+#             info[InverseKeys.DO_TRANSFORM] = self._do_transform
+#         # If this is the first, create list
+#         if key_transform not in data:
+#             data[key_transform] = []
+#         data[key_transform].append(info)
 
 
-    def get_most_recent_transform(self, data: dict, key: Hashable) -> dict:
-        """Get most recent transform."""
-        transform = dict(data[str(key) + InverseKeys.KEY_SUFFIX][-1])
-        self.check_transforms_match(transform)
-        return transform
+#     def check_transforms_match(self, transform: dict) -> None:
+#         """Check transforms are of same instance."""
+#         if transform[InverseKeys.ID] == id(self):
+#             return
+#         # basic check if multiprocessing uses 'spawn' (objects get recreated so don't have same ID)
+#         if (
+#             torch.multiprocessing.get_start_method(allow_none=False) == "spawn"
+#             and transform[InverseKeys.CLASS_NAME] == self.__class__.__name__
+#         ):
+#             return
+#         raise RuntimeError("Should inverse most recently applied invertible transform first")
 
 
-    def pop_transform(self, data: dict, key: Hashable) -> None:
-        """Remove most recent transform."""
-        data[str(key) + InverseKeys.KEY_SUFFIX].pop()
+#     def get_most_recent_transform(self, data: dict, key: Hashable) -> dict:
+#         """Get most recent transform."""
+#         transform = dict(data[str(key) + InverseKeys.KEY_SUFFIX][-1])
+#         self.check_transforms_match(transform)
+#         return transform
 
 
-    def inverse(self, data: dict) -> Dict[Hashable, np.ndarray]:
-        """
-        Inverse of ``__call__``.
-
-        Raises:
-            NotImplementedError: When the subclass does not override this method.
-
-        """
-        raise NotImplementedError(f"Subclass {self.__class__.__name__} must implement this method.")
-
-class RandCropByPosNegLabeld(Randomizable, MapTransform, InvertibleTransform):
-    """
-    """
-
-    def __init__(
-        self,
-        keys: KeysCollection,
-        label_key: str,
-        spatial_size: Union[Sequence[int], int],
-        pos: float = 1.0,
-        neg: float = 1.0,
-        num_samples: int = 1,
-        image_key: Optional[str] = None,
-        image_threshold: float = 0.0,
-        fg_indices_key: Optional[str] = None,
-        bg_indices_key: Optional[str] = None,
-        meta_keys: Optional[KeysCollection] = None,
-        meta_key_postfix: str = "meta_dict",
-        allow_missing_keys: bool = False,
-    ) -> None:
-        MapTransform.__init__(self, keys, allow_missing_keys)
-        self.label_key = label_key
-        self.spatial_size: Union[Tuple[int, ...], Sequence[int], int] = spatial_size
-        if pos < 0 or neg < 0:
-            raise ValueError(f"pos and neg must be nonnegative, got pos={pos} neg={neg}.")
-        if pos + neg == 0:
-            raise ValueError("Incompatible values: pos=0 and neg=0.")
-        self.pos_ratio = pos / (pos + neg)
-        self.num_samples = num_samples
-        self.image_key = image_key
-        self.image_threshold = image_threshold
-        self.fg_indices_key = fg_indices_key
-        self.bg_indices_key = bg_indices_key
-        self.meta_keys = ensure_tuple_rep(None, len(self.keys)) if meta_keys is None else ensure_tuple(meta_keys)
-        if len(self.keys) != len(self.meta_keys):
-            raise ValueError("meta_keys should have the same length as keys.")
-        self.meta_key_postfix = ensure_tuple_rep(meta_key_postfix, len(self.keys))
-        self.centers: Optional[List[List[np.ndarray]]] = None
-
-    def randomize(
-        self,
-        label: np.ndarray,
-        fg_indices: Optional[np.ndarray] = None,
-        bg_indices: Optional[np.ndarray] = None,
-        image: Optional[np.ndarray] = None,
-    ) -> None:
-        self.spatial_size = fall_back_tuple(self.spatial_size, default=label.shape[1:])
-        if fg_indices is None or bg_indices is None:
-            fg_indices_, bg_indices_ = map_binary_to_indices(label, image, self.image_threshold)
-        else:
-            fg_indices_ = fg_indices
-            bg_indices_ = bg_indices
-        self.centers = generate_pos_neg_label_crop_centers(
-            self.spatial_size, self.num_samples, self.pos_ratio, label.shape[1:], fg_indices_, bg_indices_, self.R
-        )
+#     def pop_transform(self, data: dict, key: Hashable) -> None:
+#         """Remove most recent transform."""
+#         data[str(key) + InverseKeys.KEY_SUFFIX].pop()
 
 
-    def __call__(self, data: Mapping[Hashable, np.ndarray]) -> List[Dict[Hashable, np.ndarray]]:
-        d = dict(data)
-        label = d[self.label_key]
-        image = d[self.image_key] if self.image_key else None
-        fg_indices = d.get(self.fg_indices_key) if self.fg_indices_key is not None else None
-        bg_indices = d.get(self.bg_indices_key) if self.bg_indices_key is not None else None
+#     def inverse(self, data: dict) -> Dict[Hashable, np.ndarray]:
+#         """
+#         Inverse of ``__call__``.
 
-        self.randomize(label, fg_indices, bg_indices, image)
-        if not isinstance(self.spatial_size, tuple):
-            raise AssertionError
-        if self.centers is None:
-            raise AssertionError
+#         Raises:
+#             NotImplementedError: When the subclass does not override this method.
 
-        # initialize returned list with shallow copy to preserve key ordering
-        results: List[Dict[Hashable, np.ndarray]] = [dict(data) for _ in range(self.num_samples)]
+#         """
+#         raise NotImplementedError(f"Subclass {self.__class__.__name__} must implement this method.")
 
-        for i, center in enumerate(self.centers):
-            # fill in the extra keys with unmodified data
-            for key in set(data.keys()).difference(set(self.keys)):
-                results[i][key] = deepcopy(data[key])
-            for key in self.key_iterator(d):
-                img = d[key]
-                cropper = SpatialCrop(roi_center=tuple(center), roi_size=self.spatial_size)  # type: ignore
-                orig_size = img.shape[1:]
-                results[i][key] = cropper(img)
-                self.push_transform(results[i], key, extra_info={"center": center}, orig_size=orig_size)
-            # add `patch_index` to the meta data
-            for key, meta_key, meta_key_postfix in self.key_iterator(d, self.meta_keys, self.meta_key_postfix):
-                meta_key = meta_key or f"{key}_{meta_key_postfix}"
-                if meta_key not in results[i]:
-                    results[i][meta_key] = {}  # type: ignore
-                results[i][meta_key][Key.PATCH_INDEX] = i
+# class RandCropByPosNegLabeld(Randomizable, MapTransform, InvertibleTransform):
+#     """
+#     """
 
-        return results
+#     def __init__(
+#         self,
+#         keys: KeysCollection,
+#         label_key: str,
+#         spatial_size: Union[Sequence[int], int],
+#         pos: float = 1.0,
+#         neg: float = 1.0,
+#         num_samples: int = 1,
+#         image_key: Optional[str] = None,
+#         image_threshold: float = 0.0,
+#         fg_indices_key: Optional[str] = None,
+#         bg_indices_key: Optional[str] = None,
+#         meta_keys: Optional[KeysCollection] = None,
+#         meta_key_postfix: str = "meta_dict",
+#         allow_missing_keys: bool = False,
+#     ) -> None:
+#         MapTransform.__init__(self, keys, allow_missing_keys)
+#         self.label_key = label_key
+#         self.spatial_size: Union[Tuple[int, ...], Sequence[int], int] = spatial_size
+#         if pos < 0 or neg < 0:
+#             raise ValueError(f"pos and neg must be nonnegative, got pos={pos} neg={neg}.")
+#         if pos + neg == 0:
+#             raise ValueError("Incompatible values: pos=0 and neg=0.")
+#         self.pos_ratio = pos / (pos + neg)
+#         self.num_samples = num_samples
+#         self.image_key = image_key
+#         self.image_threshold = image_threshold
+#         self.fg_indices_key = fg_indices_key
+#         self.bg_indices_key = bg_indices_key
+#         self.meta_keys = ensure_tuple_rep(None, len(self.keys)) if meta_keys is None else ensure_tuple(meta_keys)
+#         if len(self.keys) != len(self.meta_keys):
+#             raise ValueError("meta_keys should have the same length as keys.")
+#         self.meta_key_postfix = ensure_tuple_rep(meta_key_postfix, len(self.keys))
+#         self.centers: Optional[List[List[np.ndarray]]] = None
+
+#     def randomize(
+#         self,
+#         label: np.ndarray,
+#         fg_indices: Optional[np.ndarray] = None,
+#         bg_indices: Optional[np.ndarray] = None,
+#         image: Optional[np.ndarray] = None,
+#     ) -> None:
+#         self.spatial_size = fall_back_tuple(self.spatial_size, default=label.shape[1:])
+#         if fg_indices is None or bg_indices is None:
+#             fg_indices_, bg_indices_ = map_binary_to_indices(label, image, self.image_threshold)
+#         else:
+#             fg_indices_ = fg_indices
+#             bg_indices_ = bg_indices
+#         self.centers = generate_pos_neg_label_crop_centers(
+#             self.spatial_size, self.num_samples, self.pos_ratio, label.shape[1:], fg_indices_, bg_indices_, self.R
+#         )
 
 
-    def inverse(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
-        d = deepcopy(dict(data))
-        for key in self.key_iterator(d):
-            transform = self.get_most_recent_transform(d, key)
-            # Create inverse transform
-            orig_size = np.asarray(transform[InverseKeys.ORIG_SIZE])
-            current_size = np.asarray(d[key].shape[1:])
-            center = transform[InverseKeys.EXTRA_INFO]["center"]
-            cropper = SpatialCrop(roi_center=tuple(center), roi_size=self.spatial_size)  # type: ignore
-            # get required pad to start and end
-            pad_to_start = np.array([s.indices(o)[0] for s, o in zip(cropper.slices, orig_size)])
-            pad_to_end = orig_size - current_size - pad_to_start
-            # interleave mins and maxes
-            pad = list(chain(*zip(pad_to_start.tolist(), pad_to_end.tolist())))
-            inverse_transform = BorderPad(pad)
-            # Apply inverse transform
-            d[key] = inverse_transform(d[key])
-            # Remove the applied transform
-            self.pop_transform(d, key)
+#     def __call__(self, data: Mapping[Hashable, np.ndarray]) -> List[Dict[Hashable, np.ndarray]]:
+#         d = dict(data)
+#         label = d[self.label_key]
+#         image = d[self.image_key] if self.image_key else None
+#         fg_indices = d.get(self.fg_indices_key) if self.fg_indices_key is not None else None
+#         bg_indices = d.get(self.bg_indices_key) if self.bg_indices_key is not None else None
 
-        return d
+#         self.randomize(label, fg_indices, bg_indices, image)
+#         if not isinstance(self.spatial_size, tuple):
+#             raise AssertionError
+#         if self.centers is None:
+#             raise AssertionError
+
+#         # initialize returned list with shallow copy to preserve key ordering
+#         results: List[Dict[Hashable, np.ndarray]] = [dict(data) for _ in range(self.num_samples)]
+
+#         for i, center in enumerate(self.centers):
+#             # fill in the extra keys with unmodified data
+#             for key in set(data.keys()).difference(set(self.keys)):
+#                 results[i][key] = deepcopy(data[key])
+#             for key in self.key_iterator(d):
+#                 img = d[key]
+#                 cropper = SpatialCrop(roi_center=tuple(center), roi_size=self.spatial_size)  # type: ignore
+#                 orig_size = img.shape[1:]
+#                 results[i][key] = cropper(img)
+#                 self.push_transform(results[i], key, extra_info={"center": center}, orig_size=orig_size)
+#             # add `patch_index` to the meta data
+#             for key, meta_key, meta_key_postfix in self.key_iterator(d, self.meta_keys, self.meta_key_postfix):
+#                 meta_key = meta_key or f"{key}_{meta_key_postfix}"
+#                 if meta_key not in results[i]:
+#                     results[i][meta_key] = {}  # type: ignore
+#                 results[i][meta_key][Key.PATCH_INDEX] = i
+
+#         return results
+
+
+#     def inverse(self, data: Mapping[Hashable, np.ndarray]) -> Dict[Hashable, np.ndarray]:
+#         d = deepcopy(dict(data))
+#         for key in self.key_iterator(d):
+#             transform = self.get_most_recent_transform(d, key)
+#             # Create inverse transform
+#             orig_size = np.asarray(transform[InverseKeys.ORIG_SIZE])
+#             current_size = np.asarray(d[key].shape[1:])
+#             center = transform[InverseKeys.EXTRA_INFO]["center"]
+#             cropper = SpatialCrop(roi_center=tuple(center), roi_size=self.spatial_size)  # type: ignore
+#             # get required pad to start and end
+#             pad_to_start = np.array([s.indices(o)[0] for s, o in zip(cropper.slices, orig_size)])
+#             pad_to_end = orig_size - current_size - pad_to_start
+#             # interleave mins and maxes
+#             pad = list(chain(*zip(pad_to_start.tolist(), pad_to_end.tolist())))
+#             inverse_transform = BorderPad(pad)
+#             # Apply inverse transform
+#             d[key] = inverse_transform(d[key])
+#             # Remove the applied transform
+#             self.pop_transform(d, key)
+
+#         return d
 
 #==========================
 

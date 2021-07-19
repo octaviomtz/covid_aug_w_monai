@@ -37,10 +37,16 @@ from monai.transforms import (
     Spacingd,
     SpatialPadd,
     EnsureTyped,
+    DeleteItemsd,
 )
 
+from monai.transforms import CopyItemsd
+from pathlib import Path
+from utils_replace_lesions import TransCustom2, TransCustom, PrintTypesShapes
+from utils_replace_lesions import get_decreasing_sequence, crop_and_pad 
+from utils_replace_lesions import read_cea_aug_slice2, pseudo_healthy_with_texture, to_torch_right_shape, normalize_new_range4, get_orig_scan_in_lesion_coords, make_mask_ring
 
-def get_xforms(mode="train", keys=("image", "label")):
+def get_xforms(mode="train", keys=("image", "label"), keys2=("image", "label", "synthesis"), path_synthesis='', decreasing_sequence='', scans_syns=[], texture=[], GEN=15):
     """returns a composed transform for train/val/infer."""
 
     xforms = [
@@ -70,6 +76,40 @@ def get_xforms(mode="train", keys=("image", "label")):
             ]
         )
         dtype = (np.float32, np.uint8)
+    if mode == "synthesis":
+        print('DOING SYNTHESIS')
+        xforms.extend(
+            [     
+                CopyItemsd(keys,1, names=['image_1', 'label_1']),
+                # PrintTypesShapes(keys, '======SHAPE LOAD'),
+                SpatialPadd(keys, spatial_size=(192, 192, -1), mode="reflect"),  # ensure at least 192x192
+                RandCropByPosNegLabeld(keys, label_key=keys[1], 
+                spatial_size=(192, 192, 16), num_samples=3), 
+                TransCustom(keys, path_synthesis, read_cea_aug_slice2, 
+                            pseudo_healthy_with_texture, scans_syns, decreasing_sequence, GEN=GEN,
+                            POST_PROCESS=True, mask_outer_ring=True, texture=np.empty(shape=(456,456)), new_value=.5),
+                RandAffined(
+                    keys2,
+                    prob=0.15,
+                    rotate_range=(0.05, 0.05, None),  # 3 parameters control the transform on 3 dimensions
+                    scale_range=(0.1, 0.1, None), 
+                    mode=("bilinear", "nearest", "bilinear"),
+                #   mode=("bilinear", "nearest"),
+                    as_tensor_output=False
+                ),
+                
+                RandGaussianNoised((keys2[0],keys2[2]), prob=0.15, std=0.01),
+            #   RandGaussianNoised(keys[0], prob=0.15, std=0.01),
+                RandFlipd(keys, spatial_axis=0, prob=0.5),
+                RandFlipd(keys, spatial_axis=1, prob=0.5),
+                RandFlipd(keys, spatial_axis=2, prob=0.5),
+                TransCustom2(keys2),
+                SpatialPadd(keys, spatial_size=(192, 192, -1), mode="reflect"),
+                DeleteItemsd(('image_1', 'label_1')),
+                # PrintTypesShapes(('image_1', 'label_1','synthetic_lesion', 'synthetic_label'), '=syn='),
+            ]
+        )
+        dtype = (np.float32, np.uint8)
     if mode == "val":
         dtype = (np.float32, np.uint8)
     if mode == "infer":
@@ -77,7 +117,7 @@ def get_xforms(mode="train", keys=("image", "label")):
     xforms.extend([CastToTyped(keys, dtype=dtype), EnsureTyped(keys)])
     return monai.transforms.Compose(xforms)
 
-
+# 'image', 'label', 'image_meta_dict', 'label_meta_dict', 'image_transforms', 'label_transforms', 'image_1', 'label_1', 'synthetic_lesion', 'synthetic_label', 'synthetic_lesion_transforms'
 def get_net():
     """returns a unet model instance."""
 
@@ -123,11 +163,26 @@ class DiceCELoss(nn.Module):
         return dice + cross_entropy
 
 
-def train(data_folder=".", model_folder="runs"):
+def train(data_folder=".", model_folder="runs", continue_training=False):
     """run a training pipeline."""
 
-    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))[:20] # XX
-    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))[:20] # XX
+    #/== files for synthesis
+    path_parent = Path('/content/drive/My Drive/Datasets/covid19/COVID-19-20_augs_cea/')
+    path_synthesis = Path(path_parent / 'CeA_BASE_grow=1_bg=-1.00_step=-1.0_scale=-1.0_seed=1.0_ch0_1=-1_ch1_16=-1_ali_thr=0.1')
+    scans_syns = os.listdir(path_synthesis)
+    decreasing_sequence = get_decreasing_sequence(255, splits= 20)
+    keys2=("image", "label", "synthetic_lesion")
+    # READ THE SYTHETIC HEALTHY TEXTURE
+    path_synthesis_old = '/content/drive/My Drive/Datasets/covid19/results/cea_synthesis/patient0/'
+    texture_orig = np.load(f'{path_synthesis_old}texture.npy.npz')
+    texture_orig = texture_orig.f.arr_0
+    texture = texture_orig + np.abs(np.min(texture_orig)) + .07
+    texture = np.pad(texture,((100,100),(100,100)),mode='reflect')
+    print(f'type(texture) = {type(texture)}, {np.shape(texture)}')
+    #==/
+
+    images = sorted(glob.glob(os.path.join(data_folder, "*_ct.nii.gz")))#[:20] # XX
+    labels = sorted(glob.glob(os.path.join(data_folder, "*_seg.nii.gz")))#[:20] # XX
     logging.info(f"training: image/label ({len(images)}) folder: {data_folder}")
 
     amp = True  # auto. mixed precision
@@ -141,9 +196,10 @@ def train(data_folder=".", model_folder="runs"):
     val_files = [{keys[0]: img, keys[1]: seg} for img, seg in zip(images[-n_val:], labels[-n_val:])]
 
     # create a training data loader
-    batch_size = 2
+    batch_size = 2 # XX should be 2
     logging.info(f"batch size {batch_size}")
-    train_transforms = get_xforms("train", keys)
+    GEN = np.random.randint(5,45)
+    train_transforms = get_xforms("synthesis", keys, keys2, path_synthesis, decreasing_sequence, scans_syns, texture, GEN)
     train_ds = monai.data.CacheDataset(data=train_files, transform=train_transforms)
     train_loader = monai.data.DataLoader(
         train_ds,
@@ -166,7 +222,17 @@ def train(data_folder=".", model_folder="runs"):
     # create BasicUNet, DiceLoss and Adam optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     net = get_net().to(device)
-    max_epochs, lr, momentum = 500, 1e-4, 0.95
+
+    # if continue training
+    if continue_training:
+        ckpts = sorted(glob.glob(os.path.join(model_folder, "*.pt")))
+        # ckpts = glob.glob(os.path.join(model_folder, "*.pt")) # XX should use sorted() to take the best model
+        ckpt = ckpts[-1]
+        logging.info(f"continue training using {ckpt}.")
+        net.load_state_dict(torch.load(ckpt, map_location=device))
+
+    max_epochs, lr, momentum = 20, 1e-4, 0.95
+    # max_epochs, lr, momentum = 500, 1e-4, 0.95
     logging.info(f"epochs {max_epochs}, lr {lr}, momentum {momentum}")
     opt = torch.optim.Adam(net.parameters(), lr=lr)
 
@@ -176,7 +242,7 @@ def train(data_folder=".", model_folder="runs"):
     )
     val_handlers = [
         ProgressBar(),
-        CheckpointSaver(save_dir=model_folder, save_dict={"net": net}, save_key_metric=True, key_metric_n_saved=3),
+        CheckpointSaver(save_dir=model_folder, save_dict={"net": net}, save_key_metric=True, key_metric_n_saved=10), #key_metric_n_saved=3
     ]
     evaluator = monai.engines.SupervisedEvaluator(
         device=device,
@@ -286,7 +352,7 @@ if __name__ == "__main__":
     """
     parser = argparse.ArgumentParser(description="Run a basic UNet segmentation baseline.")
     parser.add_argument(
-        "mode", metavar="mode", default="train", choices=("train", "infer"), type=str, help="mode of workflow"
+        "mode", metavar="mode", default="train", choices=("train", "infer", "continue_train"), type=str, help="mode of workflow"
     )
     parser.add_argument("--data_folder", default="", type=str, help="training data folder")
     parser.add_argument("--model_folder", default="runs", type=str, help="model folder")
@@ -294,7 +360,10 @@ if __name__ == "__main__":
 
     monai.config.print_config()
     monai.utils.set_determinism(seed=0)
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    logging.basicConfig(handlers=[
+        logging.FileHandler("./train_and_val.log"),
+        logging.StreamHandler()],
+    level=logging.INFO)
 
     if args.mode == "train":
         data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Train")
@@ -302,5 +371,8 @@ if __name__ == "__main__":
     elif args.mode == "infer":
         data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Validation")
         infer(data_folder=data_folder, model_folder=args.model_folder)
+    elif args.mode == "continue_train":
+        data_folder = args.data_folder or os.path.join("COVID-19-20_v2", "Train")
+        train(data_folder=data_folder, model_folder=args.model_folder, continue_training=True)
     else:
         raise ValueError("Unknown mode.")

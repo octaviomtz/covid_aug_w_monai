@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["train", "--data_folder", "/content/drive/MyDrive/Datasets/covid19/COVID-19-20_v2/Train"],
+            "args": ["continue_train", "--data_folder", "/content/drive/MyDrive/Datasets/covid19/COVID-19-20_v2/Train"],
             "justMyCode": false,
         }
     ]
