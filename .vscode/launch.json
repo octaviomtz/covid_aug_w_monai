@@ -10,7 +10,34 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal",
-            "args": ["continue_train", "--data_folder", "/content/drive/MyDrive/Datasets/covid19/COVID-19-20_v2/Train"],
+            "args": [
+                "--SCAN_NAME", "volume-covid19-A-0014",
+                "--only_one_slice", "-1",
+                "--BACKGROUND_INTENSITY", "-1",
+                "--STEP_SIZE", "-1",
+                "--SCALE_MASK", "-1",
+                "--SEED_VALUE", "1",
+                "--PRETRAIN", "0",
+                "--CH0_1", "-1",
+                "--CH1_16", "-1",
+                "--ALIVE_THRESH", "0.1",
+                "--GROW_ON_K_ITER", "1"
+                "--INNER_ITER", "1",
+                "--SKIP_LESIONS", "0"
+            ],
+            "justMyCode": false,
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "continue_train",
+                "--data_folder",
+                "/content/drive/MyDrive/Datasets/covid19/COVID-19-20_v2/Train"
+            ],
             "justMyCode": false,
         }
     ]
