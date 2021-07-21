@@ -1,4 +1,4 @@
-#%%
+#%% IMPORTS
 import argparse
 import glob
 import logging
@@ -26,35 +26,42 @@ import os
 from pathlib import Path
 from tqdm.notebook import tqdm
 
-#%%
 import monai
 from monai.transforms import (
     LoadImaged,
     ScaleIntensityRanged,
     CastToTyped,
+    AddChanneld,
+    Orientationd,
+    Spacingd,
 )
 
-#%%
 from utils import (
     select_lesions_match_conditions2, 
     superpixels, 
     coords_min_max_2D, 
-    make_list_of_targets_and_seeds)
+    make_list_of_targets_and_seeds,
+    fig_superpixels_only_lesions, fig_superpixels_ICCV)
 from utils_cell_auto import (correct_label_in_plot, 
     create_sobel_and_identity, 
     prepare_seed, 
     epochs_in_inner_loop, 
     plot_loss_and_lesion_synthesis,
     to_rgb,
-    CeA_00
+    CeA_BASE, CeA_BASE_1CNN 
     )
 # from utils import coords_min_max_2D
 
-#%%
 from time import time
 import torch.nn.functional as F
+from skimage.morphology import remove_small_holes, remove_small_objects
+import argparse
 
-#%%
+#%% AUTORELOAD  
+%reload_ext autoreload
+%autoreload 2
+
+#%% FUNCTIONS
 def get_xforms_load(mode="load", keys=("image", "label")):
     """returns a composed transform."""
     xforms = [
@@ -66,18 +73,189 @@ def get_xforms_load(mode="load", keys=("image", "label")):
     xforms.extend([CastToTyped(keys, dtype=dtype)])
     return monai.transforms.Compose(xforms)
 
+def get_xforms_load_scans(mode="load", keys=("image", "label")):
+    """returns a composed transform for train/val/infer."""
 
-#%%
-folder_source = '/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/'
+    xforms = [
+        LoadImaged(keys),
+        AddChanneld(keys),
+        Orientationd(keys, axcodes="LPS"),
+        Spacingd(keys, pixdim=(1.25, 1.25, 5.0), mode=("bilinear", "nearest")[: len(keys)]),
+        # ScaleIntensityRanged(keys[0], a_min=-1000.0, a_max=500.0, b_min=0.0, b_max=1.0, clip=True),
+    ]
+    if mode == "load":
+        dtype = (np.int16, np.uint8)
+    # xforms.extend([CastToTyped(keys, dtype=dtype), ToTensord(keys)])
+    xforms.extend([CastToTyped(keys, dtype=dtype)])
+    return monai.transforms.Compose(xforms)
+
+#%% HYPERPARAMETERS
+SCAN_NAME = 'volume-covid19-A-0014'
+SKIP_LESIONS = -1
+ONLY_ONE_SLICE = 34
+SEED_VALUE = 1
+GROW_ON_K_ITER = 1
+BACKGROUND_INTENSITY = 0.11
+STEP_SIZE = 1
+SCALE_MASK = 0.19 
+CH0_1 = 1
+CH1_16 = 15
+ALIVE_THRESH = 0.1
+ITER_INNER = 1
+#%% READ INDIVIDUAL LESIONS
+folder_source = f'/content/drive/MyDrive/Datasets/covid19/COVID-19-20/individual_lesions/{SCAN_NAME}_ct/'
 files_scan = sorted(glob.glob(os.path.join(folder_source,"*.npy")))
 files_mask = sorted(glob.glob(os.path.join(folder_source,"*.npz")))
 keys = ("image", "label")
 files = [{keys[0]: img, keys[1]: seg} for img, seg in zip(files_scan, files_mask)]
 print(len(files_scan), len(files_mask), len(files))
 
-# %%
+# %% DATASET DATALOADER
 batch_size = 1
 transforms_load = get_xforms_load("load", keys)
+ds_lesions = monai.data.CacheDataset(data=files, transform=transforms_load)
+loader_lesions = monai.data.DataLoader(
+        ds_lesions,
+        batch_size=batch_size,
+        shuffle=False, #should be true for training
+        num_workers=2,
+        pin_memory=torch.cuda.is_available(),
+    )
+#%%
+mask_sizes=[]
+cluster_sizes = []
+targets_all = []
+for idx_mini_batch,mini_batch in enumerate(loader_lesions):
+    if idx_mini_batch < SKIP_LESIONS:continue #resume incomplete reconstructions
+
+    img = mini_batch['image'].numpy()
+    mask = mini_batch['label'].numpy()
+    mask = remove_small_objects(mask, 20)
+    mask_sizes.append([idx_mini_batch, np.sum(mask)])
+    name_prefix = mini_batch['image_meta_dict']['filename_or_obj'][0].split('/')[-1].split('.npy')[0].split('19-')[-1]
+    img_lesion = img*mask
+    
+    # # if 2nd argument is provided then only analyze that slice
+    if ONLY_ONE_SLICE != -1: 
+        slice_used = int(name_prefix.split('_')[-1])
+        if slice_used != int(ONLY_ONE_SLICE): continue
+
+    #%%
+    # mini_batch = next(iter(train_loader))
+    print(f'mini_batch = {idx_mini_batch} {name_prefix}')
+    print(mini_batch.keys())
+    print(len(mini_batch))
+    print(np.shape(mini_batch['image'][0]))
+    print(name_prefix)
+
+    #%%
+    fig, ax = plt.subplots(1,2)
+    ax[0].imshow(img[0])
+    ax[0].imshow(mask[0],alpha=.3)
+    ax[1].imshow(img_lesion[0])
+
+    # SLIC
+    # numSegments = 300 # run slic with large segments to eliminate background & vessels
+    SCALAR_LIMIT_CLUSTER_SIZE = 200 #200 was used in the ICCV try \340
+    numSegments = np.max([np.sum(mask[0]>0)//SCALAR_LIMIT_CLUSTER_SIZE, 1]) # run slic with large segments to eliminate background & vessels
+    TRESH_BACK = 0.10 #orig=0.15
+    THRES_VESSEL = 0.3 #orig=.5
+    print(f'numSegments={numSegments}')
+    if numSegments>1: # if mask is large then superpixels
+        SCALAR_SIZE2 = 100
+        numSegments = np.max([np.sum(mask[0]>0)//SCALAR_SIZE2, 4])
+        segments = slic((img[0]).astype('double'), n_segments = numSegments, mask=mask[0], sigma = .2, multichannel=False, compactness=.1)
+        background, lesion_area, vessels = superpixels((img[0]).astype('double'), segments, background_threshold=TRESH_BACK, vessel_threshold=THRES_VESSEL)
+        mask_slic = lesion_area>0
+        boundaries = mark_boundaries(mask_slic*img[0], segments)[...,0]
+        # label_seg, nr_seg = label(segments)
+    else: # small lesion (use the original mask)
+        numSegments=-1
+        background, lesion_area, vessels = superpixels((img[0]).astype('double'), mask[0], background_threshold=TRESH_BACK, vessel_threshold=THRES_VESSEL)
+        mask_slic = mask[0]
+        boundaries = np.zeros_like(mask_slic)
+        segments = mask[0]
+    segments_sizes = [np.sum(segments==i_segments) for i_segments in np.unique(segments)[1:]]
+    cluster_sizes.append(segments_sizes)
+    segments_sizes = [str(f'{i_segments}') for i_segments in segments_sizes]
+    segments_sizes = '\n'.join(segments_sizes)
+
+    # save vars for fig_slic
+    background_plot = background;  lesion_area_plot = lesion_area
+    vessels_plot = vessels; boundaries_plot = boundaries
+    
+    # remove small holes
+    labelled, nr = label(mask_slic)
+    mask_dil = remove_small_holes(remove_small_objects(mask_slic, 50))
+    labelled2, nr2 = label(mask_dil)
+
+    # separate each small lesion, make each seed and save them in a list
+    tgt_minis, tgt_minis_coords, tgt_minis_masks, tgt_minis_big, tgt_minis_coords_big, tgt_minis_masks_big = select_lesions_match_conditions2(segments, img[0], skip_index=0)
+    targets, coords, masks, seeds = make_list_of_targets_and_seeds(tgt_minis, tgt_minis_coords, tgt_minis_masks, seed_value=SEED_VALUE, seed_method='max')
+    targets_all.append(len(targets))
+
+    ###
+    coords_big = name_prefix.split('_')
+    coords_big = [int(i) for i in coords_big[1:]]
+    TRESH_P=10
+    scan =  np.random.rand(400,400,60) # XX these variables exist in segment_and_augment
+    scan_mask = np.random.randint(0,2,(400,400,60)) # XX these variables exist in segment_and_augment
+    # if len(np.unique(background)) == 1 and len(np.unique(vessels)) ==1:
+    #     fig_slic = fig_superpixels_only_lesions(scan, scan_mask, img, mask_slic, 
+    #                                             boundaries_plot, segments, segments_sizes, coords_big, 
+    #                                             TRESH_P, idx_mini_batch, numSegments)
+    # else:
+    #     fig_slic = fig_superpixels_ICCV(scan, scan_mask, img, mask_slic, 
+    #                                     boundaries_plot, segments, segments_sizes, coords_big, 
+    #                                     TRESH_P, idx_mini_batch, numSegments)
+
+
+    # ======= CELLULAR AUTOMATA
+    device = 'cuda'
+    num_channels = 16
+    epochs = 2500
+    sample_size = 8
+    path_parent = 'interactive/CeA_BASE1'
+    path_save_synthesis = f'{path_parent}_={GROW_ON_K_ITER}_bg={BACKGROUND_INTENSITY:.02f}_step={STEP_SIZE}_scale={SCALE_MASK}_seed={SEED_VALUE}_ch0_1={CH0_1}_ch1_16={CH1_16}_ali_thr={ALIVE_THRESH}_iter={ITER_INNER}/'
+    path_save_synthesis = f'{path_save_synthesis}{SCAN_NAME}/'
+    Path(path_save_synthesis).mkdir(parents=True, exist_ok=True)#OMM
+    path_synthesis_figs = f'{path_save_synthesis}fig_slic/'
+    Path(f'{path_synthesis_figs}').mkdir(parents=True, exist_ok=True)
+    fig_superpixels_only_lesions(path_synthesis_figs, name_prefix, scan, scan_mask, img, mask_slic, boundaries_plot, segments, segments_sizes, coords_big, TRESH_P, idx_mini_batch, numSegments)
+    # fig_superpixels_only_lesions(path_synthesis_figs, name_prefix, scan, scan_mask, img, mask_slic, 
+    #                             boundaries_plot, segments, segments_sizes, coords_big, 
+    #                             TRESH_P, idx_mini_batch, numSegments)
+    # fig_slic.savefig(f'{path_synthesis_figs}{name_prefix}_slic.png')
+    
+
+    if slice_used == int(ONLY_ONE_SLICE): break
+
+#%%
+background, lesion_area, vessels = superpixels((img[0]).astype('double'), segments, background_threshold=TRESH_BACK, vessel_threshold=THRES_VESSEL)
+len(np.unique(background)), np.unique(lesion_area), len(np.unique(vessels))
+
+#%%
+from utils import fig_superpixels_only_lesions, fig_superpixels_only_lesions2
+
+#%%
+plt.imshow(vessels)
+#%%
+len(targets), len(coords), len(masks), len(seeds)
+
+#%%
+for (i, segVal) in enumerate(np.unique(segments)):
+    im2 = (img[0]).astype('double')
+    mask = np.zeros_like(im2)
+    mask[segments == segVal] = 1
+    clus = im2*mask
+    # plt.figure()
+    # plt.imshow(clus)
+    median_intensity = np.median(clus[clus>0])
+    print(median_intensity)
+
+#%%
+plt.imshow(im2)
+######
 
 #%%
 train_ds = monai.data.CacheDataset(data=files, transform=transforms_load)
@@ -96,7 +274,7 @@ for idx,mini_batch in enumerate(train_loader):
     mask = mini_batch['label'].numpy()
     mask_sizes.append([idx, np.sum(mask)])
     img_lesion = img*mask
-    if idx==6: break # to get a large mask
+    if idx==0: break # to get a large mask
 
 # %%
 # mini_batch = next(iter(train_loader))

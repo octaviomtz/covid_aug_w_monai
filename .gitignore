@@ -1,5 +1,6 @@
 output/*
 runs/*
+.vscode/*
 *.ipynb
 train_base_146ep/*
 metrics_val/*
@@ -8,3 +9,5 @@ train_base_60_maybe_delete/*
 run_net1.5.py
 run_net_TEMP.py
 train_and_val16ep.log
+interactive/*
+__pycache__/*

@@ -1,6 +1,7 @@
 import numpy as np
 import math
-from scipy.ndimage import binary_fill_holes
+from scipy.ndimage import binary_fill_holes, distance_transform_bf
+from matplotlib import pyplot as plt 
 
 def coords_min_max_2D(array):
   '''return the min and max+1 of a mask. We use mask+1 to include the whole mask'''
@@ -35,6 +36,14 @@ def superpixels(im2, segments, background_threshold=.2, vessel_threshold=.4):
   return background, lesion_area, vessels
 
 def select_lesions_match_conditions2(small_lesions, img, skip_index=1, max_size=np.inf):
+  '''
+  small_lesions: mask with every element selected by superpixels
+  img: original slice corresponding to the mask small_lesions 
+  For each element of the mask 'small_lesions' AND IF
+  the area of the element is smaller than max_size
+  then return save the corresponding slice area in target_minis.
+  And its mask and its coords in target_minis_coords, target_minis_masks
+  '''
   target_minis = []
   target_minis_coords = []
   target_minis_masks = []
@@ -59,7 +68,8 @@ def select_lesions_match_conditions2(small_lesions, img, skip_index=1, max_size=
 
 #export
 def make_list_of_targets_and_seeds(tgt_small, tgt_coords_small, tgt_masks_small, init_lists=True, seed_value=1, targets=[], seeds=[], masks=[], coords=[], seed_method='center'):
-  '''if no list is sent create lists of targets and their seeds, if a list is sent, append the new values '''
+  '''if no list is sent create lists of targets and their seeds, 
+  if a list is sent, append the new values '''
   if init_lists: 
     targets = []
     seeds = []
@@ -89,3 +99,50 @@ def make_list_of_targets_and_seeds(tgt_small, tgt_coords_small, tgt_masks_small,
     coords.append(i_coords)
     masks.append(i_mask)
   return targets, coords, masks, seeds
+
+def fig_superpixels_ICCV(path_synthesis_figs, name_prefix, scan, scan_mask, img, background_plot, vessels_plot,
+mask_slic, boundaries_plot, segments, segments_sizes, lesion_area,
+targets, coords_big, TRESH_P, idx_mini_batch, numSegments):
+    '''version used in early experiments'''
+    fig_slic, ax = plt.subplots(3,3, figsize=(12,12))
+    ax[0,0].imshow(scan[...,coords_big[-1]])
+    ax[0,0].text(25,25,idx_mini_batch,c='r', fontsize=12)
+    ax[0,0].imshow(scan_mask[...,coords_big[-1]], alpha=.3)
+    ax[0,1].imshow(scan[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]])
+    ax[0,1].imshow(scan_mask[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]], alpha=.3)
+    ax[0,2].imshow(img[0])
+    # ax[0,2].imshow(mask[0],alpha=.3)
+    ax[1,0].imshow((background_plot>0)*img[0], vmax=1)
+    ax[1,0].text(5,5,'bckg',c='r', fontsize=12)
+    ax[1,1].imshow((vessels_plot>0)*img[0], vmax=1)
+    ax[1,1].text(5,5,'vessel',c='r', fontsize=12)
+    ax[1,2].imshow(mask_slic*img[0], vmax=1)
+    ax[1,2].text(5,10,f'lesion\nnSegm={numSegments}',c='r', fontsize=12)
+    ax[2,0].imshow(boundaries_plot*mask_slic, vmax=1)
+    ax[2,0].text(5,5,f'seg={len(np.unique(segments))}',c='r', fontsize=12)
+    ax[2,1].imshow(segments)
+    ax[2,1].text(5,np.shape(segments)[0]//2,segments_sizes,c='r', fontsize=12)
+    ax[2,2].imshow(lesion_area, vmax=1)
+    ax[2,2].text(5,np.shape(mask_slic)[0]//2,f'targets={len(targets)}',c='r', fontsize=12)
+    # for axx in ax.ravel(): axx.axis('off')
+    fig_slic.tight_layout()
+    fig_slic.savefig(f'{path_synthesis_figs}{name_prefix}_slic.png') 
+
+def fig_superpixels_only_lesions(path_synthesis_figs, name_prefix, scan, scan_mask, img, mask_slic, boundaries_plot, segments, segments_sizes, coords_big, TRESH_P, idx_mini_batch, numSegments):
+    '''plot 2 rows'''
+    fig_slic, ax = plt.subplots(2,3, figsize=(12,8))
+    ax[0,0].imshow(scan[...,coords_big[-1]])
+    ax[0,0].text(25,25,idx_mini_batch,c='r', fontsize=12)
+    ax[0,0].imshow(scan_mask[...,coords_big[-1]], alpha=.3)
+    ax[0,1].imshow(scan[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]])
+    ax[0,1].imshow(scan_mask[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]], alpha=.3)
+    ax[0,2].imshow(img[0])
+    # ax[0,2].imshow(mask[0],alpha=.3)
+    ax[1,0].imshow(boundaries_plot*mask_slic, vmax=1)
+    ax[1,0].text(5,5,f'seg={len(np.unique(segments))}',c='r', fontsize=12)
+    ax[1,1].imshow(segments)
+    ax[1,1].text(5,np.shape(segments)[0]//2,segments_sizes,c='r', fontsize=12)
+    ax[1,2].imshow(mask_slic*img[0], vmax=1)
+    ax[1,2].text(5,10,f'lesion\nnSegm={numSegments}',c='r', fontsize=12)
+    fig_slic.tight_layout()
+    fig_slic.savefig(f'{path_synthesis_figs}{name_prefix}_slic.png')    

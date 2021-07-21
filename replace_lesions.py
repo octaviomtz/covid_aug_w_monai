@@ -1,3 +1,7 @@
+# ##############################################
+# INTERACTIVE CODE USED TO ADD THE SYNTHETIC LESIONS
+# TO THE MONAI DATASETS
+# ##############################################
 #%%
 import glob
 import os
