@@ -154,7 +154,7 @@ def fig_blend_lesion(slice_healthy_inpain2, coords_big, GEN, decreasing_sequence
     ax[0].imshow(slice_healthy_inpain2[coords_big[0]-Tp:coords_big[1]+Tp,coords_big[2]-Tp:coords_big[3]+Tp], cmap='viridis', vmin=0, vmax=V_MAX);
     ax[0].text(2,8, GEN, fontsize=20, c='r')
     ax[0].text(2,5, name_synthesis_two_lines, fontsize=14, c='r')
-    ax[1].vlines(x=0, ymin=0, ymax=len(lesion), color='k');
+    # ax[1].vlines(x=0, ymin=0, ymax=len(lesion), color='k');
     ax[1].scatter(0,GEN, c='k', s=decreasing_sequence[-1]);
     ax[1].set_ylim([0,decreasing_sequence[-1]]);
     ax[1].text(0,0, 0, fontsize=20, c='k')

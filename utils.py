@@ -131,7 +131,7 @@ targets, coords_big, TRESH_P, idx_mini_batch, numSegments):
 def fig_superpixels_only_lesions(path_synthesis_figs, name_prefix, scan, scan_mask, img, mask_slic, boundaries_plot, segments, segments_sizes, coords_big, TRESH_P, idx_mini_batch, numSegments):
     '''plot 2 rows'''
     fig_slic, ax = plt.subplots(2,3, figsize=(12,8))
-    ax[0,0].imshow(scan[...,coords_big[-1]])
+    ax[0,0].imshow(scan[...,coords_big[-1]], vmin=-1000, vmax=500)
     ax[0,0].text(25,25,idx_mini_batch,c='r', fontsize=12)
     ax[0,0].imshow(scan_mask[...,coords_big[-1]], alpha=.3)
     ax[0,1].imshow(scan[coords_big[0]-TRESH_P:coords_big[1]+TRESH_P,coords_big[2]-TRESH_P:coords_big[3]+TRESH_P,coords_big[-1]])

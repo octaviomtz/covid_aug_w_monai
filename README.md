@@ -34,7 +34,7 @@ python3 run_net2.py train --data_folder "COVID-19-20_v2/Train"
 ### References
 
 * [Mordvintsev A. et al. Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)
-* nCA code based on ...
+* nCA code based on https://github.com/Mayukhdeb/differentiable-morphogenesis
 
 ## Authors
 

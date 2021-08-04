@@ -11,3 +11,4 @@ run_net_TEMP.py
 train_and_val16ep.log
 interactive/*
 __pycache__/*
+images/*

@@ -55,7 +55,6 @@ from utils_cell_auto import (correct_label_in_plot,
 from time import time
 import torch.nn.functional as F
 from skimage.morphology import remove_small_holes, remove_small_objects
-import argparse
 #%%
 def get_xforms_load(mode="load", keys=("image", "label")):
     """returns a composed transform."""
@@ -221,10 +220,8 @@ for idx_mini_batch,mini_batch in enumerate(loader_lesions):
     segments_sizes = '\n'.join(segments_sizes)
 
     # save vars for fig_slic
-    
     background_plot = background;  lesion_area_plot = lesion_area
     vessels_plot = vessels; boundaries_plot = boundaries
-    
     labelled, nr = label(mask_slic)
     mask_dil = remove_small_holes(remove_small_objects(mask_slic, 50))
     labelled2, nr2 = label(mask_dil)
