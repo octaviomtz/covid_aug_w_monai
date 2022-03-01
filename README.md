@@ -1,4 +1,4 @@
-# C19 lesion synthesis
+# Covid monai segmentation
 
 Synthesis of Covid19 lesions using superpixels and neural cellular automata (nCA).
 
@@ -35,6 +35,9 @@ python3 run_net2.py train --data_folder "COVID-19-20_v2/Train"
 
 * [Mordvintsev A. et al. Growing Neural Cellular Automata](https://distill.pub/2020/growing-ca/)
 * nCA code based on https://github.com/Mayukhdeb/differentiable-morphogenesis
+
+## Local development
+/content/drive/MyDrive/repositories/covid19_monai_segmentation
 
 ## Authors
 
